@@ -8,9 +8,11 @@ import os
 import shutil
 import argparse
 
-def setup_logging(log_dir: str):
+def setup_logging(log_dir: str) -> None:
     """Sets up logging to both the console and a file named with the current timestamp."""
     log_filename = datetime.now().strftime("update_libraries_%Y-%m-%d_%H-%M-%S.log")
+    # Ensure the log directory exists before trying to write to it
+    os.makedirs(log_dir, exist_ok=True)
     log_filepath = os.path.join(log_dir, log_filename)
     
     # Get the root logger
@@ -35,7 +37,7 @@ def setup_logging(log_dir: str):
     
     logging.info(f"--- Log started. Output is being saved to {log_filepath} ---")
 
-def cleanup_invalid_distributions():
+def cleanup_invalid_distributions() -> None:
     """
     Scans for and removes invalid distribution folders (e.g., '~packagename')
     that can be left behind by interrupted pip installations.
@@ -57,7 +59,7 @@ def cleanup_invalid_distributions():
     if cleaned_count == 0:
         logging.info("No invalid distributions found to clean up.")
 
-def update_pip_itself():
+def update_pip_itself() -> None:
     """
     Upgrades pip to its latest version, showing output only if an actual upgrade occurs.
     """
@@ -65,10 +67,10 @@ def update_pip_itself():
     try:
         # Command to upgrade pip, capturing output to check for an actual upgrade
         result = subprocess.run([sys.executable, '-m', 'pip', 'install', '--upgrade', 'pip'], check=True, text=True, capture_output=True, encoding='utf-8')
-        # Check if the output indicates a new version was installed or uninstalled
-        if "Successfully installed" in result.stdout or "Successfully uninstalled" in result.stdout:
+        # If pip was already up to date, the output is minimal. If it was upgraded, log the details.
+        if "Requirement already satisfied" not in result.stdout:
             logging.info(result.stdout)
-            logging.info("Successfully upgraded pip.")
+            logging.info("Pip was successfully upgraded.")
         else:
             logging.info("Pip is already up to date.")
     except subprocess.CalledProcessError as e:
@@ -78,12 +80,14 @@ def update_pip_itself():
     except Exception as e:
         logging.error(f"An unexpected error occurred while upgrading pip: {e}")
 
-def update_all_outdated_libraries(exclude_packages: list):
+def update_all_outdated_libraries(exclude_packages: list[str]) -> None:
     """
     Checks for all outdated Python libraries and upgrades them, showing live progress.
     This script relies on the 'pip' command being in your system's PATH.
     """
     logging.info("\nScanning for outdated Python libraries...")
+    packages_to_upgrade = []
+    return_code = 1 # Default to error state
     try:
         # Run pip list --outdated and capture the output
         # Use the JSON format for stable, machine-readable output
@@ -91,28 +95,28 @@ def update_all_outdated_libraries(exclude_packages: list):
             [sys.executable, '-m', 'pip', 'list', '--outdated', '--format', 'json'],
             capture_output=True, text=True, check=True, encoding='utf-8'
         )
-        package_names = [pkg['name'] for pkg in json.loads(result.stdout)]
-        if not package_names:
+        outdated_packages = [pkg['name'] for pkg in json.loads(result.stdout)]
+        if not outdated_packages:
             logging.info("No outdated packages found.")
             return
 
         # Filter out packages from the exclusion list
         if exclude_packages:
-            original_count = len(package_names)
-            package_names = [pkg for pkg in package_names if pkg not in exclude_packages]
-            excluded_count = original_count - len(package_names)
+            original_count = len(outdated_packages)
+            packages_to_upgrade = [pkg for pkg in outdated_packages if pkg not in exclude_packages]
+            excluded_count = original_count - len(packages_to_upgrade)
             if excluded_count > 0:
                 logging.info(f"Skipping {excluded_count} package(s) based on the exclusion list: {', '.join(exclude_packages)}")
+        else:
+            packages_to_upgrade = outdated_packages
 
-        if not package_names:
+        if not packages_to_upgrade:
             logging.info("All outdated packages are in the exclusion list. Nothing to do.")
             return
 
-        logging.info(f"Found {len(package_names)} outdated package(s). Starting upgrades...")
-        packages_to_upgrade = list(package_names) # Keep a copy for the summary
-
+        logging.info(f"Found {len(packages_to_upgrade)} outdated package(s). Starting upgrades...")
         # Upgrade all packages in a single command for better dependency resolution and speed
-        upgrade_command = [sys.executable, '-m', 'pip', 'install', '--upgrade'] + package_names
+        upgrade_command = [sys.executable, '-m', 'pip', 'install', '--upgrade'] + packages_to_upgrade
         # Use Popen to stream output live to the logger
         process = subprocess.Popen(upgrade_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
 
@@ -124,19 +128,6 @@ def update_all_outdated_libraries(exclude_packages: list):
                 logging.info(line.strip())
         
         return_code = process.wait()
-        
-        # --- Final Summary ---
-        logging.info("\n" + "="*50)
-        logging.info("UPDATE SUMMARY")
-        logging.info("="*50)
-        logging.info(f"The script attempted to upgrade the following {len(packages_to_upgrade)} package(s):")
-        for pkg in packages_to_upgrade:
-            logging.info(f"- {pkg}")
-
-        if return_code == 0:
-            logging.info("\nResult: All upgrades completed successfully.")
-        else:
-            logging.error(f"\nResult: An error occurred. The process finished with exit code {return_code}. Please review the log for details.")
 
     except FileNotFoundError:
         logging.error("Error: The 'pip' command was not found. Please ensure Python and pip are correctly installed and added to your system's PATH.")
@@ -144,11 +135,23 @@ def update_all_outdated_libraries(exclude_packages: list):
         logging.error(f"An error occurred while running pip: {e.stderr}")
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
+    finally:
+        # --- Final Summary ---
+        if packages_to_upgrade:
+            logging.info("\n" + "="*50)
+            logging.info("UPDATE SUMMARY")
+            logging.info("="*50)
+            logging.info(f"The script attempted to upgrade the following {len(packages_to_upgrade)} package(s):")
+            for pkg in packages_to_upgrade:
+                logging.info(f"- {pkg}")
 
-def main():
-    """Main function to parse arguments and run the update process."""
+            if return_code == 0:
+                logging.info("\nResult: All upgrades completed successfully.")
+            else:
+                logging.error(f"\nResult: An error occurred. The process finished with exit code {return_code}. Please review the log for details.")
+
+def _parse_args() -> argparse.Namespace:
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    
     parser = argparse.ArgumentParser(
         description="A script to clean the Python environment and update all outdated packages.",
         formatter_class=argparse.RawTextHelpFormatter
@@ -174,8 +177,11 @@ def main():
         action='store_true',
         help="Skip the cleanup of invalid package distributions."
     )
-    
-    args = parser.parse_args()
+    return parser.parse_args()
+
+def main() -> None:
+    """Main function to parse arguments and run the update process."""
+    args = _parse_args()
     
     # Set up logging first
     setup_logging(log_dir=args.log_dir)
@@ -193,3 +199,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+## testing
