@@ -1,0 +1,17 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Log files created by your script
+*.log
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE and editor folders
+.vscode/
+.idea/
