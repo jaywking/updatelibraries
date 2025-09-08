@@ -1,9 +1,0 @@
-2025-08-05 12:01:29,761 - INFO - --- Log started. Output is being saved to c:\Utils\update libraries\update_libraries_2025-08-05_12-01-29.log ---
-2025-08-05 12:01:29,761 - INFO - 
-Scanning for and cleaning up invalid package distributions...
-2025-08-05 12:01:29,764 - WARNING - Found invalid distribution '~zure_mgmt_resource-23.1.1.dist-info' in C:\Users\jaywk\AppData\Roaming\Python\Python312\site-packages. Removing it.
-2025-08-05 12:01:29,768 - INFO - Checking and upgrading pip...
-2025-08-05 12:01:31,971 - INFO - Pip is already up to date.
-2025-08-05 12:01:31,973 - INFO - 
-Scanning for outdated Python libraries...
-2025-08-05 12:01:48,477 - INFO - No outdated packages found.
