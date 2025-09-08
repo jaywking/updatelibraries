@@ -4,11 +4,11 @@ import json
 import logging
 import re
 from datetime import datetime
-from datetime import timedelta
+from datetime import timedelta, timezone
 import site
-import os
 import shutil
 import argparse
+from pathlib import Path
 
 class ConsoleFormatter(logging.Formatter):
     """A custom formatter that prints INFO messages cleanly but adds the levelname for others."""
@@ -18,16 +18,16 @@ class ConsoleFormatter(logging.Formatter):
         # For other levels (WARNING, ERROR, etc.), add the levelname prefix
         return f"{record.levelname}: {record.getMessage()}"
 
-def setup_logging(log_dir: str) -> None:
+def setup_logging(log_dir: Path, verbose: bool = False) -> None:
     """Sets up logging to both the console and a file named with the current timestamp."""
     log_filename = datetime.now().strftime("update_libraries_%Y-%m-%d_%H-%M-%S.log")
     # Ensure the log directory exists before trying to write to it
-    os.makedirs(log_dir, exist_ok=True)
-    log_filepath = os.path.join(log_dir, log_filename)
-    
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_filepath = log_dir / log_filename
+
     # Get the root logger
     logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG) # Set root logger to the lowest level
     
     # Clear existing handlers to avoid duplicate logs
     if logger.hasHandlers():
@@ -36,38 +36,41 @@ def setup_logging(log_dir: str) -> None:
     # File handler - logs everything with a detailed format
     file_handler = logging.FileHandler(log_filepath, encoding='utf-8')
     file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setLevel(logging.DEBUG) # File handler always logs everything
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
 
     # Console handler - logs messages cleanly for a better user experience
     console_handler = logging.StreamHandler(sys.stdout)
+    # Show DEBUG (pip output) only if verbose is true, otherwise just INFO and above
+    console_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
     console_handler.setFormatter(ConsoleFormatter('%(message)s'))
     logger.addHandler(console_handler)
     
     logging.info(f"--- Log started. Output is being saved to {log_filepath} ---")
 
-def cleanup_old_logs(log_dir: str, retention_days: int) -> None:
+def cleanup_old_logs(log_dir: Path, retention_days: int) -> None:
     """Deletes log files in the specified directory older than the retention period."""
     if retention_days <= 0:
         logging.info("Log file cleanup is disabled (retention days is 0 or less).")
         return
 
     logging.info(f"\nCleaning up log files older than {retention_days} days...")
-    now = datetime.now()
+    now = datetime.now(timezone.utc).astimezone() # Make 'now' timezone-aware
     cutoff = now - timedelta(days=retention_days)
     cleaned_count = 0
     
     try:
-        for filename in os.listdir(log_dir):
-            if filename.startswith("update_libraries_") and filename.endswith(".log"):
+        for log_file in log_dir.glob("update_libraries_*.log"):
+            if log_file.is_file():
                 try:
                     # Extract timestamp string from "update_libraries_YYYY-MM-DD_HH-MM-SS.log"
-                    timestamp_str = filename.replace("update_libraries_", "").replace(".log", "")
+                    timestamp_str = log_file.name.removeprefix("update_libraries_").removesuffix(".log")
                     log_date = datetime.strptime(timestamp_str, "%Y-%m-%d_%H-%M-%S")
-                    if log_date < cutoff:
-                        filepath = os.path.join(log_dir, filename)
-                        os.remove(filepath)
-                        logging.info(f"Deleted old log file: {filename}")
+                    # Make log_date timezone-aware for correct comparison
+                    if log_date.astimezone() < cutoff:
+                        log_file.unlink()
+                        logging.info(f"Deleted old log file: {log_file.name}")
                         cleaned_count += 1
                 except (ValueError, IndexError):
                     continue # Ignore files that don't match the expected name format
@@ -91,11 +94,12 @@ def cleanup_invalid_distributions() -> None:
         site_packages_paths.append(site.getusersitepackages())
 
     for path in set(site_packages_paths): # Use set to avoid duplicates
-        if os.path.isdir(path):
-            for item in os.listdir(path):
-                if item.startswith('~') and os.path.isdir(os.path.join(path, item)):
-                    logging.warning(f"Found invalid distribution '{item}' in {path}. Removing it.")
-                    shutil.rmtree(os.path.join(path, item))
+        site_path = Path(path)
+        if site_path.is_dir():
+            for item in site_path.iterdir():
+                if item.is_dir() and item.name.startswith('~'):
+                    logging.warning(f"Found invalid distribution '{item.name}' in {site_path}. Removing it.")
+                    shutil.rmtree(item)
                     cleaned_count += 1
     if cleaned_count == 0:
         logging.info("No invalid distributions found to clean up.")
@@ -178,7 +182,7 @@ def update_all_outdated_libraries(exclude_packages: list[str], dry_run: bool = F
             if not line and process.poll() is not None:
                 break
             if line:
-                logging.info(line.strip())
+                logging.debug(line.strip()) # Log pip output as DEBUG
         
         proc_return_code = process.wait()
         if proc_return_code != 0:
@@ -205,16 +209,16 @@ def update_all_outdated_libraries(exclude_packages: list[str], dry_run: bool = F
             return # Skip the success/error message for dry runs
 
         if packages_to_upgrade:
-            logging.info(f"The script attempted to upgrade the following {len(packages_to_upgrade)} package(s):")
+            logging.info(f"Upgrade process initiated for the following {len(packages_to_upgrade)} package(s):")
             for pkg in packages_to_upgrade:
                 logging.info(f"- {pkg}")
         elif final_return_code == 0:
             logging.info("No packages required an upgrade.")
 
         if final_return_code == 0:
-            logging.info("\nResult: All operations completed successfully.")
+            logging.info("\nResult: The upgrade process completed successfully.")
         else:
-            logging.error(f"\nResult: An error occurred. The process finished with exit code {final_return_code}. Please review the log for details.")
+            logging.error(f"\nResult: The upgrade process failed with exit code {final_return_code}. Please review the log for details.")
 
 def _parse_requirements_file(filepath: str) -> list[str]:
     """Parses a requirements.txt file to extract package names."""
@@ -227,11 +231,11 @@ def _parse_requirements_file(filepath: str) -> list[str]:
                 if not line or line.startswith('#'):
                     continue
                 # Match the package name (e.g., 'requests' from 'requests==2.31.0')
-                match = re.match(r'^[a-zA-Z0-9-_]+', line)
+                match = re.match(r'^[a-zA-Z0-9-_.\[\]]+', line)
                 if match:
                     packages.append(match.group(0))
         logging.info(f"Successfully parsed {len(packages)} packages from '{filepath}'.")
-    except FileNotFoundError:
+    except FileNotFoundError: # pragma: no cover
         logging.error(f"Requirements file not found at '{filepath}'.")
     except Exception as e:
         logging.error(f"Failed to parse requirements file '{filepath}': {e}")
@@ -239,7 +243,7 @@ def _parse_requirements_file(filepath: str) -> list[str]:
 
 def _parse_args() -> argparse.Namespace:
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    parser = argparse.ArgumentParser(
+    parser = argparse.ArgumentParser( # pragma: no cover
         description="A script to clean the Python environment and update all outdated packages.",
         formatter_class=argparse.RawTextHelpFormatter
     )
@@ -256,7 +260,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         '--log-dir',
-        default=script_dir,
+        default=Path(script_dir),
         help=f"Directory to save log files.\n(default: script's directory, {script_dir})"
     )
     parser.add_argument(
@@ -280,6 +284,11 @@ def _parse_args() -> argparse.Namespace:
         action='store_true',
         help="Show which packages would be updated without actually updating them."
     )
+    parser.add_argument(
+        '-v', '--verbose',
+        action='store_true',
+        help="Show detailed pip output on the console instead of just in the log file."
+    )
     return parser.parse_args()
 
 def main() -> None:
@@ -293,10 +302,10 @@ def main() -> None:
         exclusions.extend(_parse_requirements_file(args.exclude_from))
 
     # Set up logging first
-    setup_logging(log_dir=args.log_dir)
+    setup_logging(log_dir=Path(args.log_dir), verbose=args.verbose)
 
     # Clean up old logs based on retention policy
-    if not args.skip_cleanup:
+    if not args.skip_cleanup and args.log_retention_days > 0:
         cleanup_old_logs(log_dir=args.log_dir, retention_days=args.log_retention_days)
 
     # Clean up any broken package folders first
