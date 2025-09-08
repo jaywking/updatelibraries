@@ -242,7 +242,7 @@ def _parse_requirements_file(filepath: str) -> list[str]:
     return packages
 
 def _parse_args() -> argparse.Namespace:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser( # pragma: no cover
         description="A script to clean the Python environment and update all outdated packages.",
         formatter_class=argparse.RawTextHelpFormatter
