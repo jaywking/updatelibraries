@@ -10,6 +10,7 @@ import shutil
 import argparse
 from pathlib import Path
 from typing import List, Dict
+import time
 
 class ConsoleFormatter(logging.Formatter):
     """A custom formatter that prints INFO messages cleanly but adds the levelname for others."""
@@ -167,6 +168,17 @@ class UpgradeStatusManager:
                 self.display() # Refresh display to show next package
                 return
 
+def run_with_retries(cmd: list, retries: int = 3, delay: int = 3) -> subprocess.CompletedProcess:
+    """Run a subprocess command with retries on failure."""
+    for attempt in range(retries):
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8')
+        except subprocess.CalledProcessError as e:
+            logging.warning(f"Attempt {attempt+1} failed: {e}. Retrying in {delay} seconds...")
+            time.sleep(delay)
+    logging.error(f"All {retries} attempts failed for command: {' '.join(cmd)}")
+    raise
+
 def update_all_outdated_libraries(exclude_packages: list[str], dry_run: bool = False, verbose: bool = False) -> None:
     """
     Checks for all outdated Python libraries and upgrades them, showing live progress.
@@ -180,12 +192,11 @@ def update_all_outdated_libraries(exclude_packages: list[str], dry_run: bool = F
 
     packages_to_upgrade = []
     final_return_code = 0 # Default to success, will be updated on error
+    failed_packages = []
     try:
-        # Run pip list --outdated and capture the output
-        # Use the JSON format for stable, machine-readable output
-        result = subprocess.run(
-            [sys.executable, '-m', 'pip', 'list', '--outdated', '--format', 'json'],
-            capture_output=True, text=True, check=True, encoding='utf-8'
+        # Use run_with_retries for pip list
+        result = run_with_retries(
+            [sys.executable, '-m', 'pip', 'list', '--outdated', '--format', 'json']
         )
         outdated_packages = [pkg['name'] for pkg in json.loads(result.stdout)]
         if not outdated_packages:
@@ -235,6 +246,11 @@ def update_all_outdated_libraries(exclude_packages: list[str], dry_run: bool = F
                     for pkg_with_version in installed_pkgs:
                         pkg_name = pkg_with_version.split('-')[0]
                         status_manager.mark_done(pkg_name)
+                if "ERROR:" in line or "Failed" in line:
+                    # Try to extract package name from error line
+                    match = re.search(r"ERROR: Could not install packages: ([a-zA-Z0-9-_]+)", line)
+                    if match:
+                        failed_packages.append(match.group(1))
 
 
         proc_return_code = process.wait()
@@ -247,6 +263,9 @@ def update_all_outdated_libraries(exclude_packages: list[str], dry_run: bool = F
     except subprocess.CalledProcessError as e:
         logging.error(f"An error occurred while checking for outdated packages: {e.stderr}")
         final_return_code = e.returncode
+    except KeyboardInterrupt:
+        logging.error("Update interrupted by user (Ctrl+C).")
+        final_return_code = 2
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
         final_return_code = 1
@@ -271,6 +290,9 @@ def update_all_outdated_libraries(exclude_packages: list[str], dry_run: bool = F
                 logging.info(f"- {pkg}")
         elif final_return_code == 0:
             logging.info("No packages required an upgrade.")
+
+        if failed_packages:
+            logging.error(f"\nThe following packages failed to upgrade: {', '.join(failed_packages)}")
 
         if final_return_code == 0:
             logging.info("\nResult: The upgrade process completed successfully.")
@@ -375,7 +397,10 @@ def main() -> None:
         update_pip_itself()
     
     # Then, update all other outdated libraries
-    update_all_outdated_libraries(exclude_packages=list(set(exclusions)), dry_run=args.dry_run, verbose=args.verbose)
+    try:
+        update_all_outdated_libraries(exclude_packages=list(set(exclusions)), dry_run=args.dry_run, verbose=args.verbose)
+    except KeyboardInterrupt:
+        logging.error("Update interrupted by user (Ctrl+C).")
 
 if __name__ == "__main__":
     main()
