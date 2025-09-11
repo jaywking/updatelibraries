@@ -371,32 +371,67 @@ def _parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
+def interactive_menu():
+    print("\nPython Environment Maintenance & Package Updater")
+    print("Choose your options below (press Enter for default):\n")
+
+    exclude = []
+    while True:
+        pkg = input("Exclude a package from updates (type name, Enter to finish): ").strip()
+        if not pkg:
+            break
+        exclude.append(pkg)
+
+    exclude_from = input("Exclude packages from a requirements.txt file (path, Enter to skip): ").strip()
+    log_dir = input("Log directory (default: ./logs): ").strip() or "logs"
+    try:
+        log_retention_days = int(input("Log retention days (default: 30): ").strip() or "30")
+    except ValueError:
+        log_retention_days = 30
+    skip_pip_update = input("Skip pip update? (y/N): ").strip().lower() == "y"
+    skip_cleanup = input("Skip cleanup? (y/N): ").strip().lower() == "y"
+    dry_run = input("Dry run only? (y/N): ").strip().lower() == "y"
+    verbose = input("Verbose output? (y/N): ").strip().lower() == "y"
+
+    # Build a namespace-like object for compatibility
+    class Args:
+        pass
+    args = Args()
+    args.exclude = exclude
+    args.exclude_from = exclude_from if exclude_from else None
+    args.log_dir = log_dir
+    args.log_retention_days = log_retention_days
+    args.skip_pip_update = skip_pip_update
+    args.skip_cleanup = skip_cleanup
+    args.dry_run = dry_run
+    args.verbose = verbose
+    return args
+
 def main() -> None:
     """Main function to parse arguments and run the update process."""
-    args = _parse_args()
+    if len(sys.argv) == 1:
+        args = interactive_menu()
+    else:
+        args = _parse_args()
     
     # Combine exclusions from command line and requirements file
     exclusions = args.exclude
     if args.exclude_from:
-        # Use a helper function to parse the file
         exclusions.extend(_parse_requirements_file(args.exclude_from))
 
-    # Set up logging first
-    setup_logging(log_dir=Path(args.log_dir), verbose=args.verbose)
+    log_dir_path = Path(args.log_dir)  # Ensure log_dir is a Path object
 
-    # Clean up old logs based on retention policy
+    setup_logging(log_dir=log_dir_path, verbose=args.verbose)
+
     if not args.skip_cleanup and args.log_retention_days > 0:
-        cleanup_old_logs(log_dir=args.log_dir, retention_days=args.log_retention_days)
+        cleanup_old_logs(log_dir=log_dir_path, retention_days=args.log_retention_days)
 
-    # Clean up any broken package folders first
     if not args.skip_cleanup:
         cleanup_invalid_distributions()
 
-    # First, update pip itself
     if not args.skip_pip_update:
         update_pip_itself()
     
-    # Then, update all other outdated libraries
     try:
         update_all_outdated_libraries(exclude_packages=list(set(exclusions)), dry_run=args.dry_run, verbose=args.verbose)
     except KeyboardInterrupt:
