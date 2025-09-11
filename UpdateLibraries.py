@@ -76,7 +76,7 @@ def cleanup_old_logs(log_dir: Path, retention_days: int) -> None:
                 except (ValueError, IndexError):
                     continue # Ignore files that don't match the expected name format
                 except OSError as e:
-                    logging.warning(f"Could not delete log file {filename}: {e}")
+                    logging.warning(f"Could not delete log file {log_file.name}: {e}")
     except FileNotFoundError:
         logging.warning(f"Log directory '{log_dir}' not found for cleanup. Skipping.")
     if cleaned_count == 0:
