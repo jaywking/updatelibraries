@@ -300,12 +300,13 @@ def _parse_requirements_file(filepath: str) -> list[str]:
 
 def _parse_args() -> argparse.Namespace:
     script_dir = Path(__file__).resolve().parent
+    default_log_dir = script_dir / 'logs'
     parser = argparse.ArgumentParser( # pragma: no cover
         description="A script to clean the Python environment and update all outdated packages.",
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument(
-        '--exclude',
+        '--exclude', 
         action='append',
         default=[],
         help="Package to exclude from updates. Can be specified multiple times.\n(e.g., --exclude azure-cli --exclude esphome)"
@@ -317,8 +318,8 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         '--log-dir',
-        default=Path(script_dir),
-        help=f"Directory to save log files.\n(default: script's directory, {script_dir})"
+        default=default_log_dir,
+        help=f"Directory to save log files.\n(default: {default_log_dir})"
     )
     parser.add_argument(
         '--log-retention-days',
