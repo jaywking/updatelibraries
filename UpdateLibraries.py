@@ -9,6 +9,7 @@ import site
 import shutil
 import argparse
 from pathlib import Path
+from typing import List, Dict
 
 class ConsoleFormatter(logging.Formatter):
     """A custom formatter that prints INFO messages cleanly but adds the levelname for others."""
@@ -125,12 +126,54 @@ def update_pip_itself() -> None:
     except Exception as e:
         logging.error(f"An unexpected error occurred while upgrading pip: {e}")
 
-def update_all_outdated_libraries(exclude_packages: list[str], dry_run: bool = False) -> None:
+class UpgradeStatusManager:
+    """A helper class to track and display the status of package upgrades."""
+    def __init__(self, packages: List[str], verbose: bool):
+        self.status: Dict[str, str] = {pkg: "Pending" for pkg in packages}
+        self.verbose = verbose
+        self.total = len(packages)
+        self.done_count = 0
+
+    def update_status(self, line: str):
+        """Parses a line from pip's output and updates the status of a package."""
+        # Match lines like "Collecting <package>" or "Installing collected <package>"
+        match = re.search(r"(?:Collecting|Installing collected package(?:s)?|Attempting uninstall):\s*([a-zA-Z0-9-_]+)", line, re.IGNORECASE)
+        if match:
+            pkg_name = match.group(1).lower()
+            # Normalize names (e.g., pyyaml -> pyYAML)
+            for k_orig in self.status.keys():
+                if k_orig.lower() == pkg_name and self.status[k_orig] == "Pending":
+                    self.status[k_orig] = "In Progress"
+                    self.display()
+                    return
+
+    def display(self):
+        """Displays the current progress on a single line, if not in verbose mode."""
+        if not self.verbose:
+            in_progress_pkgs = [pkg for pkg, status in self.status.items() if status == "In Progress"]
+            if in_progress_pkgs:
+                # Show the first package that is "In Progress"
+                status_msg = f"({self.done_count + 1}/{self.total}) Upgrading {in_progress_pkgs[0]}..."
+                sys.stdout.write("\r" + " " * 60 + "\r") # Clear line
+                sys.stdout.write(status_msg)
+                sys.stdout.flush()
+
+    def mark_done(self, pkg_name: str):
+        """Marks a package as done and updates the progress count."""
+        for k_orig in self.status.keys():
+            if k_orig.lower() == pkg_name.lower() and self.status[k_orig] != "Done":
+                self.status[k_orig] = "Done"
+                self.done_count += 1
+                self.display() # Refresh display to show next package
+                return
+
+def update_all_outdated_libraries(exclude_packages: list[str], dry_run: bool = False, verbose: bool = False) -> None:
     """
     Checks for all outdated Python libraries and upgrades them, showing live progress.
     This script relies on the 'pip' command being in your system's PATH.
     """
     if dry_run:
+        # No need for a spinner in dry run, it's fast.
         logging.info("\n--- DRY RUN MODE: Scanning for outdated libraries without making changes ---")
     else:
         logging.info("\nScanning for outdated Python libraries...")
@@ -177,13 +220,23 @@ def update_all_outdated_libraries(exclude_packages: list[str], dry_run: bool = F
         # Use Popen to stream output live to the logger
         process = subprocess.Popen(upgrade_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
 
+        status_manager = UpgradeStatusManager(packages_to_upgrade, verbose)
+
         while True:
             line = process.stdout.readline()
             if not line and process.poll() is not None:
                 break
             if line:
                 logging.debug(line.strip()) # Log pip output as DEBUG
-        
+                status_manager.update_status(line)
+                # Check for successfully installed packages to mark them as "Done"
+                if "Successfully installed" in line:
+                    installed_pkgs = line.split("Successfully installed")[1].strip().split()
+                    for pkg_with_version in installed_pkgs:
+                        pkg_name = pkg_with_version.split('-')[0]
+                        status_manager.mark_done(pkg_name)
+
+
         proc_return_code = process.wait()
         if proc_return_code != 0:
             final_return_code = proc_return_code
@@ -198,6 +251,10 @@ def update_all_outdated_libraries(exclude_packages: list[str], dry_run: bool = F
         logging.error(f"An unexpected error occurred: {e}")
         final_return_code = 1
     finally:
+        # Clear the spinner line before printing the summary
+        if not verbose and packages_to_upgrade:
+            sys.stdout.write("\r" + " " * 60 + "\r") # Clear the status line
+
         # --- Final Summary ---
         logging.info("\n" + "="*50)
         logging.info("UPDATE SUMMARY")
@@ -317,7 +374,7 @@ def main() -> None:
         update_pip_itself()
     
     # Then, update all other outdated libraries
-    update_all_outdated_libraries(exclude_packages=list(set(exclusions)), dry_run=args.dry_run)
+    update_all_outdated_libraries(exclude_packages=list(set(exclusions)), dry_run=args.dry_run, verbose=args.verbose)
 
 if __name__ == "__main__":
     main()
