@@ -5,6 +5,7 @@ __pycache__/
 *.pyd
 
 # Log files created by your script
+logs/
 *.log
 
 # Virtual environments

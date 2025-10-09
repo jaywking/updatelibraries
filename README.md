@@ -2,58 +2,55 @@
 
 This Python script provides a comprehensive solution for maintaining a clean and up-to-date Python environment. It features both an easy-to-use interactive menu and a full suite of command-line arguments for automation. The script automatically finds and upgrades all outdated packages, cleans up broken installations, and manages its own log files.
 
+This project includes a batch script (`run.bat`) that handles the setup and execution in a dedicated virtual environment, ensuring that the script and its dependencies do not interfere with your global Python installation.
+
 ## Features
 
+- **Automated Environment Setup**: The `run.bat` script creates and manages a local virtual environment (`.venv`) for you.
 - **Interactive Mode**: If run without arguments, an easy-to-use menu guides you through the update options.
-- **Automatic Package Updates**: Finds and upgrades all outdated `pip` packages in a single, efficient command for better dependency resolution.
-- **Self-Updating `pip`**: Ensures `pip` itself is the latest version before proceeding with other packages.
-- **Environment Cleanup**: Scans for and removes temporary or broken package folders (e.g., `~packagename`) left by interrupted installations.
-- **Flexible Exclusions**: Exclude specific packages from being updated via the interactive menu, command-line arguments, or by providing a `requirements.txt` file.
-- **Dry Run Mode**: Preview which packages would be updated without making any actual changes to your environment.
+- **Automatic Package Updates**: Finds and upgrades all outdated `pip` packages in a single, efficient command.
+- **Self-Updating `pip`**: Ensures `pip` itself is the latest version before proceeding.
+- **Environment Cleanup**: Scans for and removes temporary or broken package folders (e.g., `~packagename`).
+- **Flexible Exclusions**: Exclude packages from updates via the menu, command-line arguments, or a `requirements.txt` file.
+- **Dry Run Mode**: Preview which packages would be updated without making any changes.
 - **Robust Logging**: Creates a timestamped log file for every run in a dedicated `logs/` directory and automatically cleans up old logs.
-- **User-Friendly Progress**: Displays a clean, single-line progress indicator during updates, with a verbose option for detailed `pip` output.
-- **Resilient Operations**: Automatically retries network-dependent commands to handle transient connection issues.
 
 ## Prerequisites
 
-- Python 3.x
-- `pip` installed and accessible in the system's PATH.
+- Python 3.x installed and its `python` command accessible in the system's PATH.
 
 ## Usage Guide
 
-There are two ways to run the script: Interactive Mode (recommended for manual runs) and Command-Line Mode (ideal for automation).
+### Recommended Method: `run.bat`
 
-### 1. Interactive Mode (Default)
+This is the simplest and safest way to run the updater. It handles all the setup steps for you.
 
-Simply run the script without any arguments to launch the interactive menu. It will prompt you for all common options.
+1.  **Open a command prompt** in the project directory.
+2.  **Execute the batch file**:
+
+    ```bash
+    run.bat
+    ```
+
+    The first time you run it, it will create a local Python virtual environment in a `.venv` folder. On subsequent runs, it will reuse this environment.
+
+### Passing Arguments
+
+You can pass any of the script's command-line arguments directly to `run.bat`. The arguments will be forwarded to the Python script.
+
+**Example: Perform a dry run**
 
 ```bash
-python UpdateLibraries.py
+run.bat --dry-run
 ```
 
-----
-You will see prompts like this:
+**Example: Exclude packages and run in verbose mode**
 
-```text
-Python Environment Maintenance & Package Updater
-Choose your options below (press Enter for default):
-
-Exclude a package from updates (type name, Enter to finish): requests
-Exclude a package from updates (type name, Enter to finish): 
-Exclude packages from a requirements.txt file (path, Enter to skip): 
-Log directory (default: ./logs): 
-Log retention days (default: 30): 
-Skip pip update? (y/N): 
-Skip cleanup? (y/N): 
-Dry run only? (y/N): y
-Verbose output? (y/N): 
+```bash
+run.bat --exclude requests --exclude numpy -v
 ```
 
-### 2. Command-Line Mode
-
-For scripting, automation, or power users, you can provide arguments directly on the command line.
-
-#### Command-Line Arguments
+### Command-Line Arguments Reference
 
 | Argument                   | Description                                                                                                 | Default          |
 | -------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------- |
@@ -62,66 +59,17 @@ For scripting, automation, or power users, you can provide arguments directly on
 | `--log-dir <DIR>`          | Directory to save log files.                                                                                | `./logs`         |
 | `--log-retention-days <N>` | Automatically delete log files older than `N` days. Set to `0` to disable.                                  | 30               |
 | `--skip-pip-update`        | Skip the initial step of updating `pip` itself.                                                             | Disabled         |
-| `--skip-cleanup`           | Skip the cleanup of invalid package distributions and old logs.                                             | Disabled         |
+| `--skip-cleanup`           | Skip the cleanup of invalid package distributions.                                                          | Disabled         |
 | `--dry-run`                | Show which packages would be updated without actually updating them.                                        | Disabled         |
 | `-v`, `--verbose`          | Show detailed `pip` output on the console instead of just in the log file.                                  | Disabled         |
 
-#### Examples
-
-**1. Dry Run**
-
-See which packages are outdated and would be upgraded, without making any changes.
-
-```bash
-python UpdateLibraries.py --dry-run
-```
-
-**2. Exclude Specific Packages**
-
-Run the update but prevent `requests` and `numpy` from being upgraded.
-
-```bash
-python UpdateLibraries.py --exclude requests --exclude numpy
-```
-
-**3. Exclude Packages from a File**
-
-Exclude all packages listed in a `pinned-requirements.txt` file. This is useful for packages you need to keep at a specific version.
-
-```bash
-python UpdateLibraries.py --exclude-from pinned-requirements.txt
-```
-
-**4. Verbose Output**
-
-Run the update and see all the real-time output from `pip` directly in your console.
-
-```bash
-python UpdateLibraries.py --verbose
-```
-
-**5. Custom Log Settings**
-
-Store logs in a different directory and keep them for only one week.
-
-```bash
-python UpdateLibraries.py --log-dir /var/logs/python-updates --log-retention-days 7
-```
-
 ## How It Works
 
-The script performs the following steps in order:
+The `run.bat` script performs the following steps:
 
-1.  **Parse Inputs**: Checks if command-line arguments were provided. If not, it launches the **interactive menu** to gather settings.
-2.  **Setup Logging**: Initializes logging to both the console and a timestamped file inside the log directory (e.g., `logs/update_libraries_2023-10-27_10-30-00.log`).
-3.  **Run Cleanup (Optional)**:
-    *   Deletes log files from previous runs that are older than the configured retention period.
-    *   Scans `site-packages` for broken distribution folders (e.g., `~requests`) and removes them.
-4.  **Update Pip (Optional)**: Checks if `pip` is outdated and upgrades it if necessary.
-5.  **Update Libraries**:
-    a. Fetches the list of all outdated packages from `pip`.
-    b. Filters out any packages specified for exclusion.
-    c. If it's a **dry run**, it prints the list of packages that would be upgraded and exits.
-    d. Otherwise, it runs a single `pip install --upgrade` command on the final list of packages.
-6.  **Summary Report**: Prints a final summary of the actions taken, including a list of packages that were upgraded or failed, and the final result of the process.
+1.  **Check for Virtual Environment**: Looks for a `.venv` directory. If it doesn't exist, it creates one using the `venv` module.
+2.  **Activate Environment**: Activates the local virtual environment.
+3.  **Install Dependencies**: Installs any dependencies listed in `requirements.txt` (currently none).
+4.  **Execute Python Script**: Runs the `UpdateLibraries.py` script, passing along any command-line arguments.
 
+The Python script then proceeds with its own logic as described in the features list.

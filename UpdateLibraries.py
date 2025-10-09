@@ -423,7 +423,7 @@ def main() -> None:
 
     setup_logging(log_dir=log_dir_path, verbose=args.verbose)
 
-    if not args.skip_cleanup and args.log_retention_days > 0:
+    if args.log_retention_days > 0:
         cleanup_old_logs(log_dir=log_dir_path, retention_days=args.log_retention_days)
 
     if not args.skip_cleanup:
@@ -439,6 +439,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-## comment at the end of the file to test automatic updates
