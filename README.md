@@ -2,11 +2,8 @@
 
 This Python script provides a comprehensive solution for maintaining a clean and up-to-date Python environment. It features both an easy-to-use interactive menu and a full suite of command-line arguments for automation. The script automatically finds and upgrades all outdated packages, cleans up broken installations, and manages its own log files.
 
-This project includes a batch script (`run.bat`) that handles the setup and execution in a dedicated virtual environment, ensuring that the script and its dependencies do not interfere with your global Python installation.
-
 ## Features
 
-- **Automated Environment Setup**: The `run.bat` script creates and manages a local virtual environment (`.venv`) for you.
 - **Interactive Mode**: If run without arguments, an easy-to-use menu guides you through the update options.
 - **Automatic Package Updates**: Finds and upgrades all outdated `pip` packages in a single, efficient command.
 - **Self-Updating `pip`**: Ensures `pip` itself is the latest version before proceeding.
@@ -21,9 +18,9 @@ This project includes a batch script (`run.bat`) that handles the setup and exec
 
 ## Usage Guide
 
-### Recommended Method: `run.bat`
+### Using `run.bat`
 
-This is the simplest and safest way to run the updater. It handles all the setup steps for you.
+The included `run.bat` file is a convenient shortcut for running the script.
 
 1.  **Open a command prompt** in the project directory.
 2.  **Execute the batch file**:
@@ -31,8 +28,6 @@ This is the simplest and safest way to run the updater. It handles all the setup
     ```bash
     run.bat
     ```
-
-    The first time you run it, it will create a local Python virtual environment in a `.venv` folder. On subsequent runs, it will reuse this environment.
 
 ### Passing Arguments
 
@@ -42,12 +37,6 @@ You can pass any of the script's command-line arguments directly to `run.bat`. T
 
 ```bash
 run.bat --dry-run
-```
-
-**Example: Exclude packages and run in verbose mode**
-
-```bash
-run.bat --exclude requests --exclude numpy -v
 ```
 
 ### Command-Line Arguments Reference
@@ -65,11 +54,11 @@ run.bat --exclude requests --exclude numpy -v
 
 ## How It Works
 
-The `run.bat` script performs the following steps:
+The script performs the following steps in order:
 
-1.  **Check for Virtual Environment**: Looks for a `.venv` directory. If it doesn't exist, it creates one using the `venv` module.
-2.  **Activate Environment**: Activates the local virtual environment.
-3.  **Install Dependencies**: Installs any dependencies listed in `requirements.txt` (currently none).
-4.  **Execute Python Script**: Runs the `UpdateLibraries.py` script, passing along any command-line arguments.
-
-The Python script then proceeds with its own logic as described in the features list.
+1.  **Parse Inputs**: Checks if command-line arguments were provided. If not, it launches the **interactive menu**.
+2.  **Setup Logging**: Initializes logging to both the console and a timestamped file.
+3.  **Run Cleanup (Optional)**: Cleans up old logs and broken package installations.
+4.  **Update Pip (Optional)**: Checks if `pip` is outdated and upgrades it if necessary.
+5.  **Update Libraries**: Fetches the list of all outdated packages, filters exclusions, and runs the upgrade.
+6.  **Summary Report**: Prints a final summary of the actions taken.
