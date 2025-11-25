@@ -5,12 +5,12 @@ This Python script provides a comprehensive solution for maintaining a clean and
 ## Features
 
 - **Interactive Mode**: If run without arguments, an easy-to-use menu guides you through the update options.
-- **Automatic Package Updates**: Finds and upgrades all outdated `pip` packages in a single, efficient command.
+- **Automatic Package Updates**: Finds and upgrades all outdated `pip` packages, running them in small batches for better resiliency.
 - **Self-Updating `pip`**: Ensures `pip` itself is the latest version before proceeding.
 - **Environment Cleanup**: Scans for and removes temporary or broken package folders (e.g., `~packagename`).
 - **Flexible Exclusions**: Exclude packages from updates via the menu, command-line arguments, or a `requirements.txt` file.
 - **Dry Run Mode**: Preview which packages would be updated without making any changes.
-- **Robust Logging**: Creates a timestamped log file for every run in a dedicated `logs/` directory and automatically cleans up old logs.
+- **Robust Logging**: Creates a timestamped log file for every run, records the version changes for each package, captures detailed `pip` output on failures, and automatically cleans up old logs.
 
 ## Prerequisites
 
@@ -60,5 +60,5 @@ The script performs the following steps in order:
 2.  **Setup Logging**: Initializes logging to both the console and a timestamped file.
 3.  **Run Cleanup (Optional)**: Cleans up old logs and broken package installations.
 4.  **Update Pip (Optional)**: Checks if `pip` is outdated and upgrades it if necessary.
-5.  **Update Libraries**: Fetches the list of all outdated packages, filters exclusions, and runs the upgrade.
-6.  **Summary Report**: Prints a final summary of the actions taken.
+5.  **Update Libraries**: Fetches the list of all outdated packages, filters exclusions, and upgrades them in small batches while streaming live progress.
+6.  **Summary Report**: Prints the before/after version of every attempted upgrade and surfaces any `pip` errors so you can act immediately.

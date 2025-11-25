@@ -3,14 +3,15 @@ import sys
 import json
 import logging
 import re
-from datetime import datetime
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta
 import site
 import shutil
 import argparse
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 import time
+
+MAX_UPGRADE_BATCH_SIZE = 5
 
 class ConsoleFormatter(logging.Formatter):
     """A custom formatter that prints INFO messages cleanly but adds the levelname for others."""
@@ -58,7 +59,7 @@ def cleanup_old_logs(log_dir: Path, retention_days: int) -> None:
         return
 
     logging.info(f"\nCleaning up log files older than {retention_days} days...")
-    now = datetime.now(timezone.utc).astimezone() # Make 'now' timezone-aware
+    now = datetime.now()  # Logs are timestamped using local time
     cutoff = now - timedelta(days=retention_days)
     cleaned_count = 0
     
@@ -69,8 +70,7 @@ def cleanup_old_logs(log_dir: Path, retention_days: int) -> None:
                     # Extract timestamp string from "update_libraries_YYYY-MM-DD_HH-MM-SS.log"
                     timestamp_str = log_file.name.removeprefix("update_libraries_").removesuffix(".log")
                     log_date = datetime.strptime(timestamp_str, "%Y-%m-%d_%H-%M-%S")
-                    # Make log_date timezone-aware for correct comparison
-                    if log_date.astimezone() < cutoff:
+                    if log_date < cutoff:
                         log_file.unlink()
                         logging.info(f"Deleted old log file: {log_file.name}")
                         cleaned_count += 1
@@ -90,19 +90,39 @@ def cleanup_invalid_distributions() -> None:
     """
     logging.info("\nScanning for and cleaning up invalid package distributions...")
     cleaned_count = 0
-    # Get all site-packages directories, including the user-specific one
-    site_packages_paths = site.getsitepackages()
-    if site.getusersitepackages():
-        site_packages_paths.append(site.getusersitepackages())
+    site_packages_paths: list[str] = []
 
-    for path in set(site_packages_paths): # Use set to avoid duplicates
-        site_path = Path(path)
-        if site_path.is_dir():
-            for item in site_path.iterdir():
-                if item.is_dir() and item.name.startswith('~'):
-                    logging.warning(f"Found invalid distribution '{item.name}' in {site_path}. Removing it.")
+    if hasattr(site, "getsitepackages"):
+        try:
+            site_packages_paths.extend(site.getsitepackages() or [])
+        except Exception as e:  # pragma: no cover - environment specific
+            logging.debug(f"Unable to read global site-packages directories: {e}")
+    if hasattr(site, "getusersitepackages"):
+        try:
+            user_site = site.getusersitepackages()
+            if user_site:
+                site_packages_paths.append(user_site)
+        except Exception as e:  # pragma: no cover - environment specific
+            logging.debug(f"Unable to read user site-packages directory: {e}")
+
+    for path_str in {str(Path(p)) for p in site_packages_paths if p}:
+        site_path = Path(path_str)
+        if not site_path.is_dir():
+            continue
+        try:
+            entries = list(site_path.iterdir())
+        except OSError as e:
+            logging.debug(f"Unable to inspect '{site_path}': {e}")
+            continue
+
+        for item in entries:
+            if item.is_dir() and item.name.startswith('~'):
+                logging.warning(f"Found invalid distribution '{item.name}' in {site_path}. Removing it.")
+                try:
                     shutil.rmtree(item)
                     cleaned_count += 1
+                except OSError as e:
+                    logging.warning(f"Could not remove '{item.name}': {e}")
     if cleaned_count == 0:
         logging.info("No invalid distributions found to clean up.")
 
@@ -170,14 +190,18 @@ class UpgradeStatusManager:
 
 def run_with_retries(cmd: list, retries: int = 3, delay: int = 3) -> subprocess.CompletedProcess:
     """Run a subprocess command with retries on failure."""
+    last_exception: Optional[subprocess.CalledProcessError] = None
     for attempt in range(retries):
         try:
             return subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8')
         except subprocess.CalledProcessError as e:
+            last_exception = e
             logging.warning(f"Attempt {attempt+1} failed: {e}. Retrying in {delay} seconds...")
             time.sleep(delay)
     logging.error(f"All {retries} attempts failed for command: {' '.join(cmd)}")
-    raise
+    if last_exception:
+        raise last_exception
+    raise RuntimeError("Command failed without raising CalledProcessError")
 
 def update_all_outdated_libraries(exclude_packages: list[str], dry_run: bool = False, verbose: bool = False) -> None:
     """
@@ -190,72 +214,103 @@ def update_all_outdated_libraries(exclude_packages: list[str], dry_run: bool = F
     else:
         logging.info("\nScanning for outdated Python libraries...")
 
-    packages_to_upgrade = []
+    packages_to_upgrade_info: list[dict] = []
+    packages_to_upgrade_names: list[str] = []
     final_return_code = 0 # Default to success, will be updated on error
-    failed_packages = []
+    failed_packages: set[str] = set()
     try:
         # Use run_with_retries for pip list
         result = run_with_retries(
             [sys.executable, '-m', 'pip', 'list', '--outdated', '--format', 'json']
         )
-        outdated_packages = [pkg['name'] for pkg in json.loads(result.stdout)]
-        if not outdated_packages:
+        outdated_packages_raw = json.loads(result.stdout or "[]")
+        if not isinstance(outdated_packages_raw, list):
+            raise ValueError("Unexpected response from 'pip list --outdated'")
+        if not outdated_packages_raw:
             logging.info("No outdated packages found.")
             return # Exit cleanly, finally block will still execute
 
         # Filter out packages from the exclusion list
-        if exclude_packages:
-            original_count = len(outdated_packages)
-            packages_to_upgrade = [pkg for pkg in outdated_packages if pkg not in exclude_packages]
-            excluded_count = original_count - len(packages_to_upgrade)
+        exclusion_set = {pkg.lower() for pkg in exclude_packages}
+        if exclusion_set:
+            original_count = len(outdated_packages_raw)
+            packages_to_upgrade_info = [
+                pkg for pkg in outdated_packages_raw
+                if pkg.get('name', '').lower() not in exclusion_set
+            ]
+            excluded_count = original_count - len(packages_to_upgrade_info)
             if excluded_count > 0:
-                logging.info(f"Skipping {excluded_count} package(s) based on the exclusion list: {', '.join(exclude_packages)}")
+                logging.info(
+                    f"Skipping {excluded_count} package(s) based on the exclusion list: "
+                    f"{', '.join(sorted(exclusion_set))}"
+                )
         else:
-            packages_to_upgrade = outdated_packages
+            packages_to_upgrade_info = outdated_packages_raw
 
-        if not packages_to_upgrade:
+        packages_to_upgrade_names = [pkg.get('name') for pkg in packages_to_upgrade_info if pkg.get('name')]
+
+        if not packages_to_upgrade_names:
             logging.info("All outdated packages are in the exclusion list. Nothing to do.")
             return # Exit cleanly, finally block will still execute
 
         if dry_run:
             logging.info("\n[DRY RUN] The following packages would be upgraded:")
-            for pkg in packages_to_upgrade:
-                logging.info(f"- {pkg}")
-            # Set packages_to_upgrade to empty so the summary reports correctly for the finally block
-            packages_to_upgrade = []
+            for pkg in packages_to_upgrade_info:
+                current_version = pkg.get('version', 'unknown')
+                latest_version = pkg.get('latest_version', 'unknown')
+                logging.info(f"- {pkg.get('name', 'unknown')} ({current_version} -> {latest_version})")
+            # Clear lists so the summary reports correctly for the finally block
+            packages_to_upgrade_info = []
+            packages_to_upgrade_names = []
             return
 
-        logging.info(f"Found {len(packages_to_upgrade)} outdated package(s). Starting upgrades...")
-        # Upgrade all packages in a single command for better dependency resolution and speed
-        upgrade_command = [sys.executable, '-m', 'pip', 'install', '--upgrade'] + packages_to_upgrade
-        # Use Popen to stream output live to the logger
-        process = subprocess.Popen(upgrade_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+        logging.info(f"Found {len(packages_to_upgrade_names)} outdated package(s). Starting upgrades...")
 
-        status_manager = UpgradeStatusManager(packages_to_upgrade, verbose)
+        status_manager = UpgradeStatusManager(packages_to_upgrade_names, verbose)
 
-        while True:
-            line = process.stdout.readline()
-            if not line and process.poll() is not None:
-                break
-            if line:
-                logging.debug(line.strip()) # Log pip output as DEBUG
-                status_manager.update_status(line)
-                # Check for successfully installed packages to mark them as "Done"
-                if "Successfully installed" in line:
-                    installed_pkgs = line.split("Successfully installed")[1].strip().split()
-                    for pkg_with_version in installed_pkgs:
-                        pkg_name = pkg_with_version.split('-')[0]
-                        status_manager.mark_done(pkg_name)
-                if "ERROR:" in line or "Failed" in line:
-                    # Try to extract package name from error line
-                    match = re.search(r"ERROR: Could not install packages: ([a-zA-Z0-9-_]+)", line)
-                    if match:
-                        failed_packages.append(match.group(1))
+        for batch_start in range(0, len(packages_to_upgrade_names), MAX_UPGRADE_BATCH_SIZE):
+            batch_names = packages_to_upgrade_names[batch_start:batch_start + MAX_UPGRADE_BATCH_SIZE]
+            upgrade_command = [sys.executable, '-m', 'pip', 'install', '--upgrade'] + batch_names
+            process = subprocess.Popen(
+                upgrade_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding='utf-8',
+                errors='replace'
+            )
+            captured_output: list[str] = []
 
+            while True:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
+                if line:
+                    stripped_line = line.strip()
+                    captured_output.append(stripped_line)
+                    logging.debug(stripped_line) # Log pip output as DEBUG
+                    status_manager.update_status(stripped_line)
+                    # Check for successfully installed packages to mark them as "Done"
+                    if "Successfully installed" in stripped_line:
+                        installed_pkgs = stripped_line.split("Successfully installed")[1].strip().split()
+                        for pkg_with_version in installed_pkgs:
+                            pkg_name = pkg_with_version.split('-')[0]
+                            status_manager.mark_done(pkg_name)
+                    if "ERROR:" in stripped_line or "Failed" in stripped_line:
+                        # Try to extract package name from error line
+                        match = re.search(r"ERROR: Could not install packages: ([a-zA-Z0-9-_]+)", stripped_line)
+                        if match:
+                            failed_packages.add(match.group(1))
 
-        proc_return_code = process.wait()
-        if proc_return_code != 0:
-            final_return_code = proc_return_code
+            proc_return_code = process.wait()
+            if proc_return_code != 0:
+                final_return_code = proc_return_code
+                logging.error(
+                    f"'pip install' exited with code {proc_return_code} while upgrading: {', '.join(batch_names)}"
+                )
+                for output_line in captured_output:
+                    logging.error(output_line)
+                failed_packages.update(batch_names)
 
     except FileNotFoundError:
         logging.error("Error: The 'pip' command was not found. Please ensure Python and pip are correctly installed and added to your system's PATH.")
@@ -271,7 +326,7 @@ def update_all_outdated_libraries(exclude_packages: list[str], dry_run: bool = F
         final_return_code = 1
     finally:
         # Clear the spinner line before printing the summary
-        if not verbose and packages_to_upgrade:
+        if not verbose and packages_to_upgrade_names:
             sys.stdout.write("\r" + " " * 60 + "\r") # Clear the status line
 
         # --- Final Summary ---
@@ -284,15 +339,17 @@ def update_all_outdated_libraries(exclude_packages: list[str], dry_run: bool = F
             logging.info("Dry run complete. No changes were made.")
             return # Skip the success/error message for dry runs
 
-        if packages_to_upgrade:
-            logging.info(f"Upgrade process initiated for the following {len(packages_to_upgrade)} package(s):")
-            for pkg in packages_to_upgrade:
-                logging.info(f"- {pkg}")
+        if packages_to_upgrade_info:
+            logging.info(f"Upgrade process initiated for the following {len(packages_to_upgrade_info)} package(s):")
+            for pkg in packages_to_upgrade_info:
+                current_version = pkg.get('version', 'unknown')
+                latest_version = pkg.get('latest_version', 'unknown')
+                logging.info(f"- {pkg.get('name', 'unknown')}: {current_version} -> {latest_version}")
         elif final_return_code == 0:
             logging.info("No packages required an upgrade.")
 
         if failed_packages:
-            logging.error(f"\nThe following packages failed to upgrade: {', '.join(failed_packages)}")
+            logging.error(f"\nThe following packages failed to upgrade: {', '.join(sorted(failed_packages))}")
 
         if final_return_code == 0:
             logging.info("\nResult: The upgrade process completed successfully.")
