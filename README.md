@@ -2,6 +2,8 @@
 
 This Python script provides a comprehensive solution for maintaining a clean and up-to-date Python environment. It features both an easy-to-use interactive menu and a full suite of command-line arguments for automation. The script automatically finds and upgrades all outdated packages, cleans up broken installations, and manages its own log files.
 
+The canonical entry point is `UpdateLibraries.py` (or `run.bat`, which forwards to it). There are no secondary copies of the script in this repo.
+
 ## Features
 
 - **Interactive Mode**: If run without arguments, an easy-to-use menu guides you through the update options.
@@ -50,7 +52,9 @@ run.bat --dry-run
 | `--skip-pip-update`        | Skip the initial step of updating `pip` itself.                                                             | Disabled         |
 | `--skip-cleanup`           | Skip the cleanup of invalid package distributions.                                                          | Disabled         |
 | `--dry-run`                | Show which packages would be updated without actually updating them.                                        | Disabled         |
+| `--no-deps`                | Do not install package dependencies when upgrading.                                                         | Disabled         |
 | `-v`, `--verbose`          | Show detailed `pip` output on the console instead of just in the log file.                                  | Disabled         |
+| `--list-installed`         | List all installed packages with version and install date, then exit.                                       | Disabled         |
 
 ## How It Works
 
