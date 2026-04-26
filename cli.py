@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-cleanup",
         action="store_true",
-        help="Skip the cleanup of invalid package distributions.",
+        help="Skip moving invalid package distributions to a backup folder.",
     )
     parser.add_argument(
         "--dry-run",
@@ -62,4 +62,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="List installed packages (name, version, install date) in a table and exit.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.cancelled = False
+    args.local_venv_targets = []
+    return args
