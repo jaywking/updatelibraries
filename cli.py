@@ -21,6 +21,13 @@ def parse_args() -> argparse.Namespace:
         help="Path to a requirements.txt file. Packages listed in this file will be excluded from updates.",
     )
     parser.add_argument(
+        "--constraint",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="Pin or limit package versions with a pip constraints file. Can be specified multiple times.",
+    )
+    parser.add_argument(
         "--log-dir",
         default=default_log_dir,
         help=f"Directory to save log files.\n(default: {default_log_dir})",
@@ -62,6 +69,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="List installed packages (name, version, install date) in a table and exit.",
     )
+    parser.add_argument("--restore-snapshot", metavar="FILE", help=argparse.SUPPRESS)
+    parser.add_argument("--confirm-preflight", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.cancelled = False
     args.local_venv_targets = []

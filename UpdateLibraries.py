@@ -11,7 +11,9 @@ from updater import (
     list_installed_packages,
     log_python_environment,
     parse_requirements_file,
+    restore_environment,
     run_pip_check,
+    snapshot_environment,
     setup_logging,
     update_all_outdated_libraries,
     update_pip_itself,
@@ -24,6 +26,10 @@ def _build_forwarded_args(args) -> list[str]:
         forwarded.extend(["--exclude", package])
     if args.exclude_from:
         forwarded.extend(["--exclude-from", args.exclude_from])
+    if getattr(args, "restore_snapshot", None):
+        forwarded.extend(["--restore-snapshot", args.restore_snapshot])
+    for constraint_file in args.constraint:
+        forwarded.extend(["--constraint", constraint_file])
     forwarded.extend(["--log-dir", str(args.log_dir)])
     forwarded.extend(["--log-retention-days", str(args.log_retention_days)])
     if args.skip_pip_update:
@@ -36,6 +42,8 @@ def _build_forwarded_args(args) -> list[str]:
         forwarded.append("--no-deps")
     if args.verbose:
         forwarded.append("--verbose")
+    if getattr(args, "confirm_preflight", False):
+        forwarded.append("--confirm-preflight")
     if getattr(args, "list_installed", False):
         forwarded.append("--list-installed")
     return forwarded
@@ -65,6 +73,66 @@ def _run_for_local_venvs(args) -> int:
     return final_return_code
 
 
+def _confirm_preflight_plan(installations: list[dict]) -> bool:
+    print("\n" + "=" * 60, flush=True)
+    print("RESOLVED UPDATE PLAN", flush=True)
+    print("=" * 60, flush=True)
+    if not installations:
+        print("Pip found no distribution changes.", flush=True)
+    else:
+        print(f"{'Package':<32} {'Planned version':<20} Status", flush=True)
+        print("-" * 60, flush=True)
+        for installation in installations:
+            metadata = installation.get("metadata", {})
+            name = metadata.get("name", "unknown")
+            version = metadata.get("version", "unknown")
+            print(f"{name:<32} {version:<20} Upgrade", flush=True)
+    while True:
+        try:
+            choice = input("\n[R] Run this plan  [C] Cancel: ").strip().lower()
+        except EOFError:
+            return False
+        if choice == "r":
+            return True
+        if choice in {"c", ""}:
+            return False
+        print("Please choose R or C.")
+
+
+def _log_completion_dashboard(
+    update_outcome: dict,
+    update_return_code: int,
+    dependency_return_code: int,
+    log_filepath: Path,
+    snapshot_path: Path | None,
+    restored_snapshot: Path | None = None,
+) -> None:
+    logging.info("\n" + "=" * 60)
+    logging.info("FINAL RESULTS")
+    logging.info("=" * 60)
+    if restored_snapshot:
+        logging.info(f"Restore: {'completed' if update_return_code == 0 else 'failed'}")
+        logging.info(f"Source snapshot: {restored_snapshot}")
+    elif update_outcome.get("preflight") == "cancelled":
+        logging.info("Update: cancelled after reviewing the resolved plan; no packages were changed.")
+    elif update_return_code == 0:
+        logging.info("Update: completed successfully.")
+    else:
+        logging.error("Update: completed with errors.")
+    logging.info(
+        "Packages: {attempted} selected, {managed} dependency-managed skipped, {excluded} user-excluded, {failed} failed.".format(
+            attempted=update_outcome.get("attempted", 0),
+            managed=len(update_outcome.get("managed_skipped", [])),
+            excluded=update_outcome.get("excluded", 0),
+            failed=len(update_outcome.get("failed", [])),
+        )
+    )
+    logging.info(f"Dependency validation: {'passed' if dependency_return_code == 0 else 'failed'}.")
+    logging.info(f"Log file: {log_filepath}")
+    if snapshot_path:
+        logging.info(f"Recovery snapshot: {snapshot_path}")
+
+
 def main() -> None:
     """Main function to parse arguments and run the update process."""
     if len(sys.argv) == 1:
@@ -84,8 +152,24 @@ def main() -> None:
 
     log_dir_path = Path(args.log_dir)  # Ensure log_dir is a Path object
 
-    setup_logging(log_dir=log_dir_path, verbose=args.verbose)
+    log_filepath = setup_logging(log_dir=log_dir_path, verbose=args.verbose)
     log_python_environment()
+
+    if getattr(args, "restore_snapshot", None):
+        restore_path = Path(args.restore_snapshot)
+        restore_return_code = restore_environment(restore_path)
+        dependency_return_code = run_pip_check(snapshot_path=restore_path)
+        _log_completion_dashboard(
+            update_outcome={},
+            update_return_code=restore_return_code,
+            dependency_return_code=dependency_return_code,
+            log_filepath=log_filepath,
+            snapshot_path=None,
+            restored_snapshot=restore_path,
+        )
+        if restore_return_code or dependency_return_code:
+            sys.exit(max(restore_return_code, dependency_return_code))
+        return
 
     # Combine exclusions from command line and requirements file
     exclusions = list(args.exclude)
@@ -97,10 +181,17 @@ def main() -> None:
         return
 
     final_return_code = 0
+    snapshot_path = None
+    update_outcome: dict = {}
+    update_return_code = 0
+    dependency_return_code = 0
 
     if args.dry_run:
         logging.info("\nDry run selected: skipping old log cleanup, package cleanup, and pip self-update.")
     else:
+        logging.info("\nProgress: creating recovery snapshot...")
+        snapshot_path = snapshot_environment(log_dir=log_dir_path)
+
         if args.log_retention_days > 0:
             cleanup_old_logs(log_dir=log_dir_path, retention_days=args.log_retention_days)
 
@@ -111,20 +202,36 @@ def main() -> None:
             final_return_code = max(final_return_code, update_pip_itself())
 
     try:
+        logging.info("\nProgress: resolving and upgrading packages...")
         update_return_code = update_all_outdated_libraries(
             exclude_packages=list(set(exclusions)),
+            constraint_files=args.constraint,
             dry_run=args.dry_run,
             verbose=args.verbose,
             no_deps=args.no_deps,
+            confirm_preflight=_confirm_preflight_plan if getattr(args, "confirm_preflight", False) else None,
+            outcome=update_outcome,
         )
         final_return_code = max(final_return_code, update_return_code)
         if args.dry_run:
             logging.info("\nDependency check skipped due to dry run.")
         else:
-            final_return_code = max(final_return_code, run_pip_check())
+            logging.info("\nProgress: package upgrades finished; validating dependencies...")
+            dependency_return_code = run_pip_check(snapshot_path=snapshot_path)
+            final_return_code = max(final_return_code, dependency_return_code)
     except KeyboardInterrupt:
         logging.error("Update interrupted by user (Ctrl+C).")
         final_return_code = 2
+
+    if args.dry_run:
+        dependency_return_code = 0
+    _log_completion_dashboard(
+        update_outcome=update_outcome,
+        update_return_code=update_return_code,
+        dependency_return_code=dependency_return_code,
+        log_filepath=log_filepath,
+        snapshot_path=snapshot_path,
+    )
 
     if final_return_code:
         sys.exit(final_return_code)

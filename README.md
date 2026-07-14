@@ -6,13 +6,17 @@ The canonical entry point is `UpdateLibraries.py` (or `run.bat`, which forwards 
 
 ## Features
 
-- **Interactive Mode**: If run without arguments, an easy-to-use menu guides you through the update options.
+- **Preview-First Interactive Mode**: If run without arguments, a menu starts with a no-change preview option, then presents one reviewable update plan before a real update can begin.
 - **LocalVenvs Picker**: From the menu, choose the current Python, one `C:\LocalVenvs` environment, or all detected LocalVenvs.
 - **Automatic Package Updates**: Finds and upgrades all outdated `pip` packages, running them in small batches for better resiliency.
 - **Self-Updating `pip`**: Ensures `pip` itself is the latest version before proceeding.
 - **Environment Visibility**: Shows the exact Python executable and `pip` version that will be inspected or modified.
 - **Safer Environment Cleanup**: Scans for temporary or broken package folders (e.g., `~packagename`) and moves them to a backup folder instead of deleting them.
 - **Flexible Exclusions**: Exclude packages from updates via the menu, command-line arguments, or a `requirements.txt` file.
+- **Constraints Support**: Apply one or more pip constraints files to keep compatible versions together.
+- **Upgrade Preflight**: Resolves and logs pip's complete proposed package plan before changing the environment.
+- **Recovery Snapshot**: Saves `pip freeze` before real updates and provides a restore command if the final dependency check fails.
+- **Guided Snapshot Restore**: The interactive menu can preview a saved snapshot's recorded Python target and package count, then requires typed confirmation before restoring it.
 - **Dry Run Mode**: Preview which packages would be updated without changing packages, updating `pip`, or moving cleanup folders.
 - **Robust Logging**: Creates a timestamped log file for every run, records the version changes for each package, captures detailed `pip` output on failures, and automatically cleans up old logs.
 - **Failure Signaling**: Returns a non-zero exit code when package upgrades or dependency checks fail.
@@ -50,6 +54,7 @@ run.bat --dry-run
 | -------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------- |
 | `--exclude <PKG>`          | Package to exclude from updates. Can be specified multiple times.                                           | None             |
 | `--exclude-from <FILE>`    | Path to a `requirements.txt`-style file. Packages listed in this file will be excluded.                     | None             |
+| `--constraint <FILE>`      | Pip constraints file that pins or limits allowed package versions. Can be specified multiple times.          | None             |
 | `--log-dir <DIR>`          | Directory to save log files.                                                                                | `./logs`         |
 | `--log-retention-days <N>` | Automatically delete log files older than `N` days. Set to `0` to disable.                                  | 30               |
 | `--skip-pip-update`        | Skip the initial step of updating `pip` itself.                                                             | Disabled         |
@@ -63,13 +68,14 @@ run.bat --dry-run
 
 The script performs the following steps in order:
 
-1.  **Parse Inputs**: Checks if command-line arguments were provided. If not, it launches the **interactive menu**.
+1.  **Choose an Action**: The interactive menu offers preview, update, list-installed, and exit actions; preview is listed first.
 2.  **Choose Environment**: Lets you use the current Python, one `C:\LocalVenvs` environment, or every detected LocalVenv.
 3.  **Confirm Environment**: Shows which Python executable(s) will be changed and asks for confirmation before a real interactive update.
 4.  **Setup Logging**: Initializes logging to both the console and a timestamped file.
 5.  **Run Cleanup (Optional)**: Cleans up old logs and moves broken package leftovers to a timestamped backup folder.
-6.  **Update Pip (Optional)**: Checks if `pip` is outdated and upgrades it if necessary.
-7.  **Update Libraries**: Fetches the list of all outdated packages, filters exclusions, and upgrades them in small batches while streaming live progress.
-8.  **Summary Report**: Prints the before/after version of every attempted upgrade and surfaces any `pip` errors so you can act immediately.
+6.  **Snapshot Environment**: Saves the current `pip freeze` output before any package changes.
+7.  **Update Pip (Optional)**: Checks if `pip` is outdated and upgrades it if necessary.
+8.  **Preflight and Update Libraries**: Fetches outdated packages, filters exclusions, resolves the full plan without modifying the environment, then upgrades in small batches while streaming progress.
+9.  **Validate and Summarize**: Runs `pip check`; if it finds conflicts, the log includes the exact command to restore the pre-update snapshot.
 
 If a batch upgrade fails, the script retries each package in that batch one at a time so the failure report names the specific package.

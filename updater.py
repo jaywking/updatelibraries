@@ -6,13 +6,15 @@ import re
 from datetime import datetime, timedelta, timezone
 import site
 import shutil
+import tempfile
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Callable, List, Dict, Optional
 import importlib.metadata
 import time
 
 MAX_UPGRADE_BATCH_SIZE = 5
 DEPENDENCY_MANAGED_PACKAGES = {"pydantic-core": "pydantic"}
+PREFLIGHT_CANCELLED = -1
 
 
 class ConsoleFormatter(logging.Formatter):
@@ -25,7 +27,7 @@ class ConsoleFormatter(logging.Formatter):
         return f"{record.levelname}: {record.getMessage()}"
 
 
-def setup_logging(log_dir: Path, verbose: bool = False) -> None:
+def setup_logging(log_dir: Path, verbose: bool = False) -> Path:
     """Sets up logging to both the console and a file named with the current timestamp."""
     log_filename = datetime.now().strftime("update_libraries_%Y-%m-%d_%H-%M-%S_%f.log")
     # Ensure the log directory exists before trying to write to it
@@ -55,6 +57,7 @@ def setup_logging(log_dir: Path, verbose: bool = False) -> None:
     logger.addHandler(console_handler)
 
     logging.info(f"--- Log started. Output is being saved to {log_filepath} ---")
+    return log_filepath
 
 
 def log_python_environment() -> None:
@@ -211,6 +214,59 @@ def update_pip_itself() -> int:
         return 1
 
 
+def snapshot_environment(log_dir: Path) -> Optional[Path]:
+    """Save the installed package set before a real update so it can be restored if needed."""
+    snapshot_dir = log_dir / "environment_snapshots"
+    snapshot_path = snapshot_dir / f"pip_freeze_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S_%f')}.txt"
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "freeze"],
+            check=True,
+            text=True,
+            capture_output=True,
+            encoding="utf-8",
+        )
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_path.write_text(
+            f"# Python executable: {sys.executable}\n# Created: {datetime.now().isoformat(timespec='seconds')}\n{result.stdout}",
+            encoding="utf-8",
+        )
+        logging.info(f"Saved pre-update package snapshot: {snapshot_path}")
+        return snapshot_path
+    except subprocess.CalledProcessError as e:
+        logging.warning(f"Could not create a pre-update package snapshot: {e.stderr}")
+    except OSError as e:
+        logging.warning(f"Could not save a pre-update package snapshot: {e}")
+    return None
+
+
+def restore_environment(snapshot_path: Path) -> int:
+    """Reinstall the package versions recorded in a pre-update snapshot."""
+    if not snapshot_path.is_file():
+        logging.error(f"Snapshot file not found: {snapshot_path}")
+        return 1
+
+    logging.info(f"\nRestoring packages from snapshot: {snapshot_path}")
+    logging.warning("Restore reinstalls the snapshot versions but does not remove packages added after the snapshot.")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--force-reinstall", "--requirement", str(snapshot_path)],
+            text=True,
+            capture_output=True,
+            encoding="utf-8",
+        )
+        if result.returncode == 0:
+            logging.info("Snapshot restore completed.")
+            return 0
+        for line in (result.stderr or result.stdout or "").splitlines():
+            if line.strip():
+                logging.error(f"Restore: {line.strip()}")
+        return result.returncode or 1
+    except OSError as e:
+        logging.error(f"Could not restore the snapshot: {e}")
+        return 1
+
+
 class UpgradeStatusManager:
     """A helper class to track and display the status of package upgrades."""
 
@@ -325,10 +381,13 @@ def _run_upgrade_command(
     package_names: list[str],
     status_manager: UpgradeStatusManager,
     no_deps: bool,
+    constraint_files: list[str],
 ) -> tuple[int, list[str]]:
     upgrade_command = [sys.executable, "-m", "pip", "install", "--upgrade"]
     if no_deps:
         upgrade_command.append("--no-deps")
+    for constraint_file in constraint_files:
+        upgrade_command.extend(["--constraint", constraint_file])
     upgrade_command += package_names
 
     process = subprocess.Popen(
@@ -362,11 +421,77 @@ def _run_upgrade_command(
     return process.wait(), captured_output
 
 
+def preflight_upgrade_plan(
+    package_names: list[str],
+    constraint_files: list[str],
+    no_deps: bool,
+    confirm_plan: Optional[Callable[[list[dict]], bool]] = None,
+) -> int:
+    """Resolve upgrades without modifying the environment and log pip's proposed changes."""
+    if not package_names:
+        return 0
+
+    report_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="pip_upgrade_plan_", suffix=".json", delete=False) as report_file:
+            report_path = Path(report_file.name)
+
+        command = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--dry-run",
+            "--report",
+            str(report_path),
+        ]
+        if no_deps:
+            command.append("--no-deps")
+        for constraint_file in constraint_files:
+            command.extend(["--constraint", constraint_file])
+        command += package_names
+
+        logging.info("\nPreflight: resolving the proposed package upgrades without making changes...")
+        result = subprocess.run(command, text=True, capture_output=True, encoding="utf-8")
+        if result.returncode != 0:
+            logging.error("Upgrade preflight failed; no packages will be upgraded.")
+            for line in (result.stderr or result.stdout or "").splitlines():
+                if line.strip():
+                    logging.error(f"Preflight: {line.strip()}")
+            return result.returncode or 1
+
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        installations = report.get("install", [])
+        logging.info(f"Preflight passed. Pip plans {len(installations)} distribution change(s):")
+        for installation in installations:
+            metadata = installation.get("metadata", {})
+            name = metadata.get("name", "unknown")
+            version = metadata.get("version", "unknown")
+            logging.info(f"- {name}=={version}")
+        if confirm_plan and not confirm_plan(installations):
+            logging.info("Upgrade cancelled after reviewing the resolved plan. No packages were changed.")
+            return PREFLIGHT_CANCELLED
+        return 0
+    except (OSError, json.JSONDecodeError) as e:
+        logging.error(f"Upgrade preflight could not read pip's plan; no packages will be upgraded: {e}")
+        return 1
+    finally:
+        if report_path:
+            try:
+                report_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def update_all_outdated_libraries(
     exclude_packages: list[str],
+    constraint_files: Optional[list[str]] = None,
     dry_run: bool = False,
     verbose: bool = False,
     no_deps: bool = False,
+    confirm_preflight: Optional[Callable[[list[dict]], bool]] = None,
+    outcome: Optional[dict] = None,
 ) -> int:
     """
     Checks for all outdated Python libraries and upgrades them, showing live progress.
@@ -382,11 +507,17 @@ def update_all_outdated_libraries(
     packages_to_upgrade_names: list[str] = []
     final_return_code = 0
     failed_packages: set[str] = set()
+    upgrades_started = False
+    constraint_files = constraint_files or []
+    if outcome is not None:
+        outcome.update({"outdated": 0, "managed_skipped": [], "excluded": 0, "attempted": 0, "failed": [], "preflight": "not-run"})
     try:
         result = run_with_retries([sys.executable, "-m", "pip", "list", "--outdated", "--format", "json"])
         outdated_packages_raw = json.loads(result.stdout or "[]")
         if not isinstance(outdated_packages_raw, list):
             raise ValueError("Unexpected response from 'pip list --outdated'")
+        if outcome is not None:
+            outcome["outdated"] = len(outdated_packages_raw)
 
         dependency_managed_packages = [
             pkg
@@ -400,6 +531,8 @@ def update_all_outdated_libraries(
                 f"Skipping {package_name}: it is dependency-managed by {managing_package} "
                 "and must not be upgraded independently."
             )
+        if outcome is not None:
+            outcome["managed_skipped"] = [pkg.get("name", "unknown") for pkg in dependency_managed_packages]
 
         packages_to_upgrade_info = [
             pkg
@@ -420,6 +553,8 @@ def update_all_outdated_libraries(
                         count=excluded_count, names=", ".join(sorted(exclusion_set))
                     )
                 )
+            if outcome is not None:
+                outcome["excluded"] = excluded_count
         packages_to_upgrade_names = [pkg.get("name") for pkg in packages_to_upgrade_info if pkg.get("name")]
 
         if not outdated_packages_raw:
@@ -433,54 +568,74 @@ def update_all_outdated_libraries(
                 latest_version = pkg.get("latest_version", "unknown")
                 logging.info(f"- {pkg.get('name', 'unknown')} ({current_version} -> {latest_version})")
         elif packages_to_upgrade_names:
-            logging.info(f"Found {len(packages_to_upgrade_names)} outdated package(s). Starting upgrades...")
+            preflight_return_code = preflight_upgrade_plan(
+                packages_to_upgrade_names,
+                constraint_files=constraint_files,
+                no_deps=no_deps,
+                confirm_plan=confirm_preflight,
+            )
+            if preflight_return_code == PREFLIGHT_CANCELLED:
+                if outcome is not None:
+                    outcome["preflight"] = "cancelled"
+            elif preflight_return_code != 0:
+                final_return_code = preflight_return_code
+                if outcome is not None:
+                    outcome["preflight"] = "failed"
+            else:
+                upgrades_started = True
+                if outcome is not None:
+                    outcome["preflight"] = "passed"
+                    outcome["attempted"] = len(packages_to_upgrade_names)
+                logging.info(f"Found {len(packages_to_upgrade_names)} outdated package(s). Starting upgrades...")
 
-            status_manager = UpgradeStatusManager(packages_to_upgrade_names, verbose)
+                status_manager = UpgradeStatusManager(packages_to_upgrade_names, verbose)
 
-            for batch_start in range(0, len(packages_to_upgrade_names), MAX_UPGRADE_BATCH_SIZE):
-                batch_names = packages_to_upgrade_names[batch_start : batch_start + MAX_UPGRADE_BATCH_SIZE]
-                proc_return_code, captured_output = _run_upgrade_command(
-                    batch_names,
-                    status_manager,
-                    no_deps=no_deps,
-                )
-                if proc_return_code == 0:
-                    continue
-
-                if len(batch_names) > 1:
-                    logging.warning(
-                        "'pip install' failed while upgrading this batch; retrying one package at a time: {names}".format(
-                            names=", ".join(batch_names)
-                        )
+                for batch_start in range(0, len(packages_to_upgrade_names), MAX_UPGRADE_BATCH_SIZE):
+                    batch_names = packages_to_upgrade_names[batch_start : batch_start + MAX_UPGRADE_BATCH_SIZE]
+                    proc_return_code, captured_output = _run_upgrade_command(
+                        batch_names,
+                        status_manager,
+                        no_deps=no_deps,
+                        constraint_files=constraint_files,
                     )
-                    logging.debug("\n".join(captured_output))
-                    for package_name in batch_names:
-                        single_code, single_output = _run_upgrade_command(
-                            [package_name],
-                            status_manager,
-                            no_deps=no_deps,
-                        )
-                        if single_code != 0:
-                            final_return_code = single_code or 1
-                            failed_packages.add(package_name)
-                            logging.error(
-                                "'pip install' exited with code {code} while upgrading: {name}".format(
-                                    code=single_code, name=package_name
-                                )
+                    if proc_return_code == 0:
+                        continue
+
+                    if len(batch_names) > 1:
+                        logging.warning(
+                            "'pip install' failed while upgrading this batch; retrying one package at a time: {names}".format(
+                                names=", ".join(batch_names)
                             )
-                            for output_line in single_output:
-                                logging.error(output_line)
-                    continue
+                        )
+                        logging.debug("\n".join(captured_output))
+                        for package_name in batch_names:
+                            single_code, single_output = _run_upgrade_command(
+                                [package_name],
+                                status_manager,
+                                no_deps=no_deps,
+                                constraint_files=constraint_files,
+                            )
+                            if single_code != 0:
+                                final_return_code = single_code or 1
+                                failed_packages.add(package_name)
+                                logging.error(
+                                    "'pip install' exited with code {code} while upgrading: {name}".format(
+                                        code=single_code, name=package_name
+                                    )
+                                )
+                                for output_line in single_output:
+                                    logging.error(output_line)
+                        continue
 
-                final_return_code = proc_return_code or 1
-                failed_packages.update(batch_names)
-                logging.error(
-                    "'pip install' exited with code {code} while upgrading: {names}".format(
-                        code=proc_return_code, names=", ".join(batch_names)
+                    final_return_code = proc_return_code or 1
+                    failed_packages.update(batch_names)
+                    logging.error(
+                        "'pip install' exited with code {code} while upgrading: {names}".format(
+                            code=proc_return_code, names=", ".join(batch_names)
+                        )
                     )
-                )
-                for output_line in captured_output:
-                    logging.error(output_line)
+                    for output_line in captured_output:
+                        logging.error(output_line)
 
     except FileNotFoundError:
         logging.error(
@@ -508,17 +663,23 @@ def update_all_outdated_libraries(
         logging.info("Dry run complete. No changes were made.")
         return final_return_code
 
-    if packages_to_upgrade_info:
+    if packages_to_upgrade_info and upgrades_started:
         logging.info(f"Upgrade process attempted for the following {len(packages_to_upgrade_info)} package(s):")
         for pkg in packages_to_upgrade_info:
             current_version = pkg.get("version", "unknown")
             latest_version = pkg.get("latest_version", "unknown")
             logging.info(f"- {pkg.get('name', 'unknown')}: {current_version} -> {latest_version}")
+    elif outcome is not None and outcome.get("preflight") == "cancelled":
+        logging.info("Upgrade cancelled after reviewing the resolved plan. No packages were changed.")
     elif final_return_code == 0:
         logging.info("No packages required an upgrade.")
+    else:
+        logging.error("No package upgrades were attempted because the preflight did not pass.")
 
     if failed_packages:
         logging.error(f"\nThe following packages failed to upgrade: {', '.join(sorted(failed_packages))}")
+    if outcome is not None:
+        outcome["failed"] = sorted(failed_packages)
 
     if final_return_code == 0:
         logging.info("\nResult: The upgrade process completed successfully.")
@@ -529,7 +690,7 @@ def update_all_outdated_libraries(
     return final_return_code
 
 
-def run_pip_check() -> int:
+def run_pip_check(snapshot_path: Optional[Path] = None) -> int:
     """Runs `pip check` and logs dependency conflicts distinctly."""
     logging.info("\nRunning dependency check (pip check)...")
     try:
@@ -551,6 +712,11 @@ def run_pip_check() -> int:
                     logging.error(f"Dependency conflict: {line}")
         else:
             logging.error("Dependency check failed with no output.")
+        if snapshot_path:
+            restore_command = subprocess.list2cmdline(
+                [sys.executable, "-m", "pip", "install", "--force-reinstall", "--requirement", str(snapshot_path)]
+            )
+            logging.error(f"To restore the pre-update package snapshot, run: {restore_command}")
         return result.returncode or 1
     except FileNotFoundError:
         logging.error("Error: The 'pip' command was not found for dependency check.")
