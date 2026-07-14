@@ -12,6 +12,7 @@ import importlib.metadata
 import time
 
 MAX_UPGRADE_BATCH_SIZE = 5
+DEPENDENCY_MANAGED_PACKAGES = {"pydantic-core": "pydantic"}
 
 
 class ConsoleFormatter(logging.Formatter):
@@ -387,11 +388,30 @@ def update_all_outdated_libraries(
         if not isinstance(outdated_packages_raw, list):
             raise ValueError("Unexpected response from 'pip list --outdated'")
 
+        dependency_managed_packages = [
+            pkg
+            for pkg in outdated_packages_raw
+            if canonical_package_name(pkg.get("name", "")) in DEPENDENCY_MANAGED_PACKAGES
+        ]
+        for pkg in dependency_managed_packages:
+            package_name = pkg.get("name", "unknown")
+            managing_package = DEPENDENCY_MANAGED_PACKAGES[canonical_package_name(package_name)]
+            logging.info(
+                f"Skipping {package_name}: it is dependency-managed by {managing_package} "
+                "and must not be upgraded independently."
+            )
+
+        packages_to_upgrade_info = [
+            pkg
+            for pkg in outdated_packages_raw
+            if canonical_package_name(pkg.get("name", "")) not in DEPENDENCY_MANAGED_PACKAGES
+        ]
+
         exclusion_set = {canonical_package_name(pkg) for pkg in exclude_packages if pkg.strip()}
         if exclusion_set:
-            original_count = len(outdated_packages_raw)
+            original_count = len(packages_to_upgrade_info)
             packages_to_upgrade_info = [
-                pkg for pkg in outdated_packages_raw if canonical_package_name(pkg.get("name", "")) not in exclusion_set
+                pkg for pkg in packages_to_upgrade_info if canonical_package_name(pkg.get("name", "")) not in exclusion_set
             ]
             excluded_count = original_count - len(packages_to_upgrade_info)
             if excluded_count > 0:
@@ -400,15 +420,12 @@ def update_all_outdated_libraries(
                         count=excluded_count, names=", ".join(sorted(exclusion_set))
                     )
                 )
-        else:
-            packages_to_upgrade_info = outdated_packages_raw
-
         packages_to_upgrade_names = [pkg.get("name") for pkg in packages_to_upgrade_info if pkg.get("name")]
 
         if not outdated_packages_raw:
             logging.info("No outdated packages found.")
         elif not packages_to_upgrade_names:
-            logging.info("All outdated packages are in the exclusion list. Nothing to do.")
+            logging.info("All outdated packages were skipped. Nothing to do.")
         elif dry_run:
             logging.info("\n[DRY RUN] The following packages would be upgraded:")
             for pkg in packages_to_upgrade_info:
