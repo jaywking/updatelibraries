@@ -1,50 +1,100 @@
-# Copilot instructions for `UpdateLibraries` repository
+# Copilot instructions for the `UpdateLibraries` repository
 
-This file gives concise, actionable guidance for an AI coding agent working on this repository.
+This file gives concise, actionable guidance for an AI coding agent working on
+this repository.
 
-1. Big picture
-- Purpose: `UpdateLibraries.py` is a single-file CLI utility to list, clean, and upgrade Python packages in the current system environment. The canonical entrypoint is [UpdateLibraries.py](UpdateLibraries.py#L1).
-- Architecture: single-script tool with small helpers: logging setup, cleanup, pip self-update, listing installed packages, and batched upgrades (batch size controlled by `MAX_UPGRADE_BATCH_SIZE`). The UI is either interactive (no args) or fully scripted via CLI flags.
+## Big picture
 
-2. Key files and where to look
-- Entrypoint: [UpdateLibraries.py](UpdateLibraries.py#L1)
-- Shortcut: [run.bat](run.bat#L1) (for Windows) forwards args to the script.
-- Dangerous helper: [remove_azure_python_sdks.bat](remove_azure_python_sdks.bat#L1) uninstalls many azure packages — do not run or modify lightly.
-- Documentation: [README.md](README.md#L1) contains usage, flags, and behavior summaries.
-- Logs: `logs/` directory; log filenames start with `update_libraries_`.
+- Purpose: the project previews, cleans, snapshots, restores, and upgrades
+  packages in the selected Python environment.
+- Architecture: [UpdateLibraries.py](../UpdateLibraries.py) coordinates the
+  workflow, [cli.py](../cli.py) owns command-line parsing,
+  [interactive.py](../interactive.py) owns the terminal menu and review screens,
+  and [updater.py](../updater.py) owns pip operations, logging, preflight,
+  snapshots, restore, batching, and dependency validation.
+- The UI is interactive when launched without arguments and scriptable through
+  CLI flags. `run.bat` forwards arguments to the canonical Python entrypoint.
 
-3. Developer workflows and commands (explicit)
-- Run interactive: `run.bat` or `python UpdateLibraries.py` (runs interactive menu).
-- Scripted examples:
-  - Dry run: `run.bat --dry-run` or `python UpdateLibraries.py --dry-run`
-  - Verbose (shows pip output): `python UpdateLibraries.py --dry-run --verbose`
-  - Exclude packages: `python UpdateLibraries.py --exclude azure-cli --exclude-from requirements.txt`
-  - List installed only: `python UpdateLibraries.py --list-installed`
+## Key files
 
-4. Project-specific conventions & patterns
-- Logging: `setup_logging()` creates a timestamped file in `logs/` (file handler = DEBUG, console = INFO unless `--verbose`). Use `logging` module for new output so logs go to file.
-- Pip invocation: always uses `sys.executable -m pip ...` to ensure the same Python interpreter is used. Prefer this pattern when adding subprocess calls.
-- Robustness: `run_with_retries()` wraps pip commands; follow this pattern for flaky subprocesses.
-- Output parsing: `UpgradeStatusManager` parses pip stdout for progress. When changing pip output handling, update that parser and tests manually.
-- Batch upgrades: packages upgraded in batches (see `MAX_UPGRADE_BATCH_SIZE`); keep that limit in mind when adding parallelization or progress features.
+- Entrypoint and orchestration: [UpdateLibraries.py](../UpdateLibraries.py)
+- CLI arguments: [cli.py](../cli.py)
+- Interactive workflow: [interactive.py](../interactive.py)
+- Package-management implementation: [updater.py](../updater.py)
+- Tests: [tests](../tests)
+- Windows shortcut: [run.bat](../run.bat)
+- Destructive Azure removal helper:
+  [remove_azure_python_sdks.bat](../remove_azure_python_sdks.bat)
+- User documentation: [README.md](../README.md)
+- Deferred work: [PARKINGLOT.md](../PARKINGLOT.md)
+- Generated logs: `logs/`; log filenames start with `update_libraries_`.
 
-5. Integration & external dependencies
-- External tool: `pip` must be available for runtime actions; script assumes `pip` is callable via `sys.executable -m pip`.
-- No third-party Python dependencies are required for the script itself (see `requirements.txt`).
+## Developer workflows
 
-6. Editing guidance for AI agents
-- Small, targeted changes: modify `UpdateLibraries.py` in-place; keep CLI compatibility and respect both interactive and scripted modes.
-- Tests / safety: prefer adding a `--dry-run` branch to new behaviors and preserve existing dry-run behavior.
-- Logs & diagnostics: add `logging.debug(...)` for internal diagnostic messages; avoid printing directly to stdout except for interactive prompts.
-- Avoid touching `remove_azure_python_sdks.bat` unless the task explicitly concerns Azure removal — it's destructive by design.
+- Run tests:
+  `python -m unittest discover -s tests -v`
+- Compile-check the Python modules:
+  `python -m compileall -q UpdateLibraries.py cli.py interactive.py updater.py`
+- Run interactively:
+  `run.bat` or `python UpdateLibraries.py`
+- Preview without changing an environment:
+  `run.bat --dry-run`
+- Show verbose preview output:
+  `python UpdateLibraries.py --dry-run --verbose`
+- Exclude packages:
+  `python UpdateLibraries.py --exclude azure-cli --exclude-from requirements.txt`
+- List installed packages:
+  `python UpdateLibraries.py --list-installed`
 
-7. Examples of actionable tasks to accept
-- Add a new CLI flag that filters packages by regex: follow `_parse_args()`, add arg, and apply filter in `update_all_outdated_libraries()`.
-- Improve parsing robustness in `UpgradeStatusManager.update_status()` when pip output format changes — include unit-like assertion comments and fallback heuristics.
-- Add unit-style smoke checks for `list_installed_packages()` by extracting small functions that can be run without modifying system packages.
+Use the project virtual environment at
+`C:\LocalVenvs\updatelibraries\Scripts\python.exe` when it exists.
 
-8. What *not* to do
-- Do not run or modify destructive batch uninstallers (`remove_azure_python_sdks.bat`) without explicit user permission.
-- Do not assume a virtualenv — the script targets the active interpreter and its site-packages.
+## Project conventions
 
-If anything here is unclear or you'd like deeper guidance (examples, tests, or a proposed refactor), tell me which area to expand.
+- Use `logging` for operational output so messages reach both the console and
+  log file. Reserve direct `print()` calls for interactive prompts and screens.
+- Invoke pip through the selected Python executable with
+  `sys.executable -m pip` so the intended environment is modified.
+- Keep `run_with_retries()` around pip operations that need retry behavior.
+- `UpgradeStatusManager` parses pip output for progress. Update its tests when
+  changing output parsing.
+- `MAX_UPGRADE_BATCH_SIZE` controls upgrade batching.
+- Normalize package names with `canonical_package_name()` before comparing
+  exclusions or dependency-managed package rules.
+- Preserve the resolver-backed preflight, pre-update snapshot, final
+  `pip check`, and restore guidance when changing the mutation path.
+- Forward relevant options consistently through CLI, interactive, and
+  LocalVenv subprocess paths.
+
+## Dependencies and integrations
+
+- Runtime package management requires pip in the selected Python environment.
+- The application itself currently has no third-party Python dependencies; see
+  [requirements.txt](../requirements.txt).
+- This is a local maintenance utility, not a deployed web or cloud service.
+  Do not introduce frontend, analytics, browser, or cloud-deploy tooling without
+  a project requirement.
+
+## Editing and safety guidance
+
+- Make small changes in the module that owns the behavior instead of routing
+  every change through `UpdateLibraries.py`.
+- Preserve compatibility between interactive and scripted modes.
+- Add or update unit tests for behavior changes and keep dry-run paths
+  non-mutating.
+- Do not run a real package update or snapshot restore merely to test code.
+  Mock subprocess operations in unit tests.
+- Do not run or modify `remove_azure_python_sdks.bat` unless the task explicitly
+  concerns Azure removal; it uninstalls packages.
+- Do not assume the active interpreter is a virtual environment. The tool may
+  target the current Python or one or more environments under `C:\LocalVenvs`.
+
+## Examples
+
+- For a new CLI flag, add parsing in `cli.parse_args()`, forward it through the
+  entrypoint and LocalVenv path, add interactive support when applicable, and
+  apply it in `updater.py`.
+- For pip-output parsing changes, update `UpgradeStatusManager` and add focused
+  tests for the new and fallback formats.
+- For package-selection changes, apply filters before downstream counts,
+  batching, preflight, and summary generation so reporting remains consistent.
