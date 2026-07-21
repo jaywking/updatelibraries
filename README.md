@@ -6,8 +6,8 @@ The canonical entry point is `UpdateLibraries.py` (or `run.bat`, which forwards 
 
 ## Features
 
-- **Preview-First Interactive Mode**: If run without arguments, a menu starts with a no-change preview option, then presents one reviewable update plan before a real update can begin.
-- **LocalVenvs Picker**: From the menu, choose the current Python, one `C:\LocalVenvs` environment, or all detected LocalVenvs.
+- **Preview-First Interactive Mode**: If run without arguments, a menu starts with a no-change preview option, then presents one reviewable update plan before a real update can begin. After each completed action, press any key to clear the screen and return to the main menu; choose Exit when you are finished.
+- **LocalVenvs Picker**: From the menu, choose the current Python, one `C:\LocalVenvs` environment, or all detected LocalVenvs. The picker uses a compact two-column name list with search; the exact Python executable is shown in the review plan before a real update.
 - **Automatic Package Updates**: Finds and upgrades all outdated `pip` packages, running them in small batches for better resiliency.
 - **Self-Updating `pip`**: Ensures `pip` itself is the latest version before proceeding.
 - **Environment Visibility**: Shows the exact Python executable and `pip` version that will be inspected or modified.

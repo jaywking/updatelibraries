@@ -1,4 +1,5 @@
 import sys
+import os
 import logging
 import subprocess
 from pathlib import Path
@@ -108,17 +109,18 @@ def _log_completion_dashboard(
     restored_snapshot: Path | None = None,
 ) -> None:
     logging.info("\n" + "=" * 60)
-    logging.info("FINAL RESULTS")
+    logging.info(" FINAL RESULTS")
     logging.info("=" * 60)
     if restored_snapshot:
-        logging.info(f"Restore: {'completed' if update_return_code == 0 else 'failed'}")
+        status = "[OK] completed" if update_return_code == 0 else "[ERROR] failed"
+        logging.info(f"Restore: {status}")
         logging.info(f"Source snapshot: {restored_snapshot}")
     elif update_outcome.get("preflight") == "cancelled":
-        logging.info("Update: cancelled after reviewing the resolved plan; no packages were changed.")
+        logging.info("Update: [CANCELLED] after reviewing the resolved plan; no packages were changed.")
     elif update_return_code == 0:
-        logging.info("Update: completed successfully.")
+        logging.info("Update: [OK] completed successfully.")
     else:
-        logging.error("Update: completed with errors.")
+        logging.error("Update: [ERROR] completed with errors.")
     logging.info(
         "Packages: {attempted} selected, {managed} dependency-managed skipped, {excluded} user-excluded, {failed} failed.".format(
             attempted=update_outcome.get("attempted", 0),
@@ -127,28 +129,22 @@ def _log_completion_dashboard(
             failed=len(update_outcome.get("failed", [])),
         )
     )
-    logging.info(f"Dependency validation: {'passed' if dependency_return_code == 0 else 'failed'}.")
+    validation_status = "[OK] passed" if dependency_return_code == 0 else "[ERROR] failed"
+    logging.info(f"Dependency validation: {validation_status}.")
     logging.info(f"Log file: {log_filepath}")
     if snapshot_path:
         logging.info(f"Recovery snapshot: {snapshot_path}")
 
 
-def main() -> None:
-    """Main function to parse arguments and run the update process."""
-    if len(sys.argv) == 1:
-        args = interactive_menu()
-    else:
-        args = parse_args()
-
+def _run_action(args) -> int:
+    """Run one selected action and return its process-style exit code."""
     if getattr(args, "cancelled", False):
         print("Update cancelled. No changes were made.")
-        return
+        return 0
 
     if getattr(args, "local_venv_targets", None):
         final_return_code = _run_for_local_venvs(args)
-        if final_return_code:
-            sys.exit(final_return_code)
-        return
+        return final_return_code
 
     log_dir_path = Path(args.log_dir)  # Ensure log_dir is a Path object
 
@@ -168,8 +164,8 @@ def main() -> None:
             restored_snapshot=restore_path,
         )
         if restore_return_code or dependency_return_code:
-            sys.exit(max(restore_return_code, dependency_return_code))
-        return
+            return max(restore_return_code, dependency_return_code)
+        return 0
 
     # Combine exclusions from command line and requirements file
     exclusions = list(args.exclude)
@@ -178,7 +174,7 @@ def main() -> None:
 
     if getattr(args, "list_installed", False):
         list_installed_packages()
-        return
+        return 0
 
     final_return_code = 0
     snapshot_path = None
@@ -233,8 +229,41 @@ def main() -> None:
         snapshot_path=snapshot_path,
     )
 
-    if final_return_code:
-        sys.exit(final_return_code)
+    return final_return_code
+
+
+def _wait_for_main_menu() -> None:
+    """Wait for a key press before showing the interactive menu again."""
+    print("\nPress any key to return to the main menu...", end="", flush=True)
+    try:
+        import msvcrt
+
+        msvcrt.getwch()
+    except (ImportError, OSError):
+        input()
+    os.system("cls" if os.name == "nt" else "clear")
+
+
+def main() -> None:
+    """Run either the repeating interactive menu or one command-line action."""
+    if len(sys.argv) != 1:
+        exit_code = _run_action(parse_args())
+        if exit_code:
+            sys.exit(exit_code)
+        return
+
+    while True:
+        args = interactive_menu()
+        if getattr(args, "cancelled", False):
+            print("Goodbye.")
+            return
+
+        exit_code = _run_action(args)
+        if exit_code:
+            print(f"\nAction completed with exit code {exit_code}.")
+        else:
+            print("\n[OK] Action complete.")
+        _wait_for_main_menu()
 
 if __name__ == "__main__":
     main()

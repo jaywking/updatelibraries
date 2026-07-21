@@ -1,5 +1,52 @@
+import os
 import sys
 from pathlib import Path
+
+
+_USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+_COLORS = {
+    "accent": "\033[96m",
+    "success": "\033[92m",
+    "warning": "\033[93m",
+    "danger": "\033[91m",
+    "muted": "\033[90m",
+    "bold": "\033[1m",
+}
+_RESET = "\033[0m"
+
+
+def _style(text: str, *styles: str) -> str:
+    if not _USE_COLOR:
+        return text
+    return "".join(_COLORS[style] for style in styles) + text + _RESET
+
+
+def _print_header(title: str = "Python Environment Maintenance & Package Updater") -> None:
+    rule = "=" * 62
+    print("\n" + _style(rule, "accent"))
+    print(_style(f" {title}", "accent", "bold"))
+    print(_style(rule, "accent"))
+
+
+def _print_venv_picker(venvs: list[tuple[str, Path]], visible_indexes: list[int] | None = None) -> None:
+    indexes = visible_indexes if visible_indexes is not None else list(range(len(venvs)))
+    print("\n" + _style("Available LocalVenvs", "accent", "bold"))
+    print(_style("[S] Search   [A] All   [C] Current Python   [B] Back", "muted"))
+    print(_style("-" * 62, "muted"))
+
+    entries = [f"{index + 1:>2}. {venvs[index][0]}" for index in indexes]
+    split_at = (len(entries) + 1) // 2
+    left_column = entries[:split_at]
+    right_column = entries[split_at:]
+    for row in range(max(len(left_column), len(right_column))):
+        left = left_column[row] if row < len(left_column) else ""
+        right = right_column[row] if row < len(right_column) else ""
+        print(f"  {left:<30}  {right}")
+
+
+def _search_local_venvs(venvs: list[tuple[str, Path]], query: str) -> list[int]:
+    normalized_query = query.strip().lower()
+    return [index for index, (name, _) in enumerate(venvs) if normalized_query in name.lower()]
 
 
 def _ask_yes_no(prompt: str, default: bool = False) -> bool:
@@ -25,7 +72,7 @@ def _find_local_venvs(root: Path = Path(r"C:\LocalVenvs")) -> list[tuple[str, Pa
     return venvs
 
 
-def _select_local_venvs() -> list[str]:
+def _select_local_venvs() -> list[str] | None:
     venvs = _find_local_venvs()
     if not venvs:
         return []
@@ -34,26 +81,32 @@ def _select_local_venvs() -> list[str]:
     if not use_local_venv:
         return []
 
-    print("\nAvailable LocalVenvs:")
-    for index, (name, python_exe) in enumerate(venvs, start=1):
-        print(f"  {index}. {name}\n     {python_exe}")
-    print("  A. All LocalVenvs")
-    print("  C. Current Python only")
+    visible_indexes: list[int] | None = None
 
     while True:
+        _print_venv_picker(venvs, visible_indexes)
         try:
-            choice = input("\nChoose a number, A for all, or C for current Python: ").strip().lower()
+            choice = input("\nChoose a number or [S] Search [A] All [C] Current [B] Back: ").strip().lower()
         except EOFError:
-            return []
+            return None
         if choice == "a":
             return [str(python_exe) for _, python_exe in venvs]
         if choice == "c" or choice == "":
             return []
+        if choice in {"b", "q"}:
+            return None
+        if choice == "s":
+            query = input("Search environment names (Enter to show all): ")
+            visible_indexes = _search_local_venvs(venvs, query) or None
+            if query.strip() and visible_indexes is None:
+                print(_style("No matching LocalVenvs found; showing all environments.", "warning"))
+            continue
         if choice.isdigit():
             index = int(choice)
-            if 1 <= index <= len(venvs):
+            allowed_indexes = visible_indexes if visible_indexes is not None else list(range(len(venvs)))
+            if 1 <= index <= len(venvs) and index - 1 in allowed_indexes:
                 return [str(venvs[index - 1][1])]
-        print("Please choose a listed number, A, or C.")
+        print(_style("Please choose a displayed number, S, A, C, or B.", "warning"))
 
 
 def _new_args():
@@ -64,13 +117,18 @@ def _new_args():
 
 
 def _choose_action() -> str:
-    print("\nPython Environment Maintenance & Package Updater")
-    print(f"Current Python: {sys.executable}")
-    print("\n  1. Preview updates (recommended)")
-    print("  2. Update packages now")
-    print("  3. List installed packages")
-    print("  4. Restore a package snapshot")
-    print("  5. Exit")
+    _print_header()
+    print(f" Current Python: {_style(sys.executable, 'muted')}")
+    print("\n  " + _style("1", "accent", "bold") + "  Preview updates " + _style("Recommended", "success"))
+    print(_style("     Safe: review available updates without changing anything.", "muted"))
+    print("  " + _style("2", "accent", "bold") + "  Update packages")
+    print(_style("     Saves a recovery snapshot before making changes.", "muted"))
+    print("  " + _style("3", "accent", "bold") + "  List installed packages")
+    print(_style("     View versions and installation dates.", "muted"))
+    print("  " + _style("4", "accent", "bold") + "  Restore a package snapshot")
+    print(_style("     Reinstall versions recorded in an earlier snapshot.", "muted"))
+    print("  " + _style("-" * 58, "muted"))
+    print("  " + _style("5", "accent", "bold") + "  Exit")
 
     while True:
         try:
@@ -79,7 +137,7 @@ def _choose_action() -> str:
             return "exit"
         if choice in {"1", "2", "3", "4", "5"}:
             return {"1": "preview", "2": "update", "3": "list", "4": "restore", "5": "exit"}[choice]
-        print("Please choose 1, 2, 3, 4, or 5.")
+        print(_style("Please choose 1, 2, 3, 4, or 5.", "warning"))
 
 
 def _snapshot_summary(snapshot_path: Path) -> tuple[str, int]:
@@ -114,7 +172,7 @@ def _select_snapshot(log_dir: Path) -> Path | None:
             choice = input("\nChoose a snapshot number or B to go back: ").strip().lower()
         except EOFError:
             return None
-        if choice in {"b", ""}:
+        if choice in {"b", "q", ""}:
             return None
         if choice.isdigit() and 1 <= int(choice) <= len(snapshots):
             return snapshots[int(choice) - 1]
@@ -160,9 +218,9 @@ def _collect_options(dry_run: bool, local_venv_targets: list[str]):
 
 
 def _review_plan(args) -> str:
-    print("\n" + "=" * 60)
-    print("UPDATE PLAN")
-    print("=" * 60)
+    print("\n" + _style("=" * 60, "accent"))
+    print(_style(" UPDATE PLAN", "accent", "bold"))
+    print(_style("=" * 60, "accent"))
     print(f"Mode: {'Preview only (no changes)' if args.dry_run else 'Update packages'}")
     print("Target environment(s):")
     targets = args.local_venv_targets or [sys.executable]
@@ -206,9 +264,9 @@ def _review_plan(args) -> str:
 def _review_restore(snapshot_path: Path, local_venv_targets: list[str]) -> bool:
     snapshot_target, package_count = _snapshot_summary(snapshot_path)
     target = local_venv_targets[0] if local_venv_targets else sys.executable
-    print("\n" + "=" * 60)
-    print("RESTORE SNAPSHOT")
-    print("=" * 60)
+    print("\n" + _style("=" * 60, "accent"))
+    print(_style(" RESTORE SNAPSHOT", "accent", "bold"))
+    print(_style("=" * 60, "accent"))
     print(f"Snapshot: {snapshot_path}")
     print(f"Snapshot target: {snapshot_target}")
     print(f"Packages recorded: {package_count}")
@@ -232,6 +290,8 @@ def interactive_menu():
             return args
 
         local_venv_targets = _select_local_venvs()
+        if local_venv_targets is None:
+            continue
         if action == "list":
             args = _new_args()
             args.exclude = []
